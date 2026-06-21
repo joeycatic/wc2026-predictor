@@ -419,7 +419,7 @@ action_left, action_right = st.columns([0.72, 0.28], vertical_alignment="center"
 with action_left:
     render_status_strip(metadata, matches)
 with action_right:
-    if st.button("Refresh live data", use_container_width=True):
+    if st.button("Refresh live data", width="stretch"):
         try:
             result = fetch_live_matches(RAW_DIR, source="auto")
             save_live_matches(result.matches, LIVE_MATCHES_PATH)
@@ -452,13 +452,13 @@ with overview_tab:
         chart_col, table_col = st.columns([0.58, 0.42])
         with chart_col:
             st.subheader("Title race")
-            st.altair_chart(top_contenders_chart(summary), use_container_width=True)
+            st.altair_chart(top_contenders_chart(summary), width="stretch")
         with table_col:
             st.subheader("Round probabilities")
             display = percent_frame(summary.head(16), ROUND_COLUMNS)
             st.dataframe(
                 display[["team", "confederation", *ROUND_COLUMNS]],
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
             )
 
@@ -504,19 +504,19 @@ with matches_tab:
     st.subheader("Completed matches")
     st.dataframe(
         format_match_table(completed_matches, completed_columns),
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
     st.subheader("Live matches")
     st.dataframe(
         format_match_table(live_matches, live_columns),
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
     st.subheader("Schedule")
     st.dataframe(
         format_match_table(upcoming_matches, upcoming_columns),
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
 
@@ -529,7 +529,7 @@ with groups_tab:
         chart_col, table_col = st.columns([0.55, 0.45])
         with chart_col:
             st.subheader(f"Group {group_filter} finish distribution")
-            st.altair_chart(group_rank_chart(group_data), use_container_width=True)
+            st.altair_chart(group_rank_chart(group_data), width="stretch")
         with table_col:
             st.subheader("Projected table")
             st.dataframe(
@@ -543,7 +543,7 @@ with groups_tab:
                         "qualification_probability",
                     ],
                 ),
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
             )
 
@@ -574,10 +574,10 @@ with bracket_tab:
             )
             .properties(height=max(220, min(680, len(round_slots) * 24)))
         )
-        st.altair_chart(bracket_chart, use_container_width=True)
+        st.altair_chart(bracket_chart, width="stretch")
         st.dataframe(
             percent_frame(round_slots, ["probability"]),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
 
@@ -601,19 +601,19 @@ with team_tab:
             st.subheader(f"{selected_team} path")
             st.altair_chart(
                 advancement_chart(summary, selected_team),
-                use_container_width=True,
+                width="stretch",
             )
         with table_col:
             st.subheader("Team probabilities")
             st.dataframe(
                 percent_frame(team_summary, ROUND_COLUMNS),
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
             )
         st.subheader("Group profile")
-        st.dataframe(team_groups, use_container_width=True, hide_index=True)
+        st.dataframe(team_groups, width="stretch", hide_index=True)
         st.subheader("Matches")
-        st.dataframe(team_matches, use_container_width=True, hide_index=True)
+        st.dataframe(team_matches, width="stretch", hide_index=True)
 
 with data_tab:
     integrity = metadata.get("simulation_integrity", {})
@@ -625,12 +625,12 @@ with data_tab:
             integrity.get("round_totals", {}),
             orient="index",
         ).reset_index(names="round")
-        st.dataframe(round_checks, use_container_width=True, hide_index=True)
+        st.dataframe(round_checks, width="stretch", hide_index=True)
         st.subheader("Probability total checks")
         probability_checks = pd.DataFrame.from_dict(
             integrity.get("probability_totals", {}),
             orient="index",
         ).reset_index(names="probability")
-        st.dataframe(probability_checks, use_container_width=True, hide_index=True)
+        st.dataframe(probability_checks, width="stretch", hide_index=True)
     st.subheader("Run metadata")
     st.json(metadata)
