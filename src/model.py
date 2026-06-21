@@ -169,6 +169,31 @@ def evaluate_predictions(
     }
 
 
+def balance_training_classes(
+    train: pd.DataFrame, target_column: str = "result"
+) -> pd.DataFrame:
+    """Oversample minority classes inside the training partition only."""
+    counts = train[target_column].value_counts()
+    if counts.empty:
+        return train
+    target_count = int(counts.max())
+    parts = []
+    for _, group in train.groupby(target_column, sort=False):
+        if len(group) >= target_count:
+            parts.append(group)
+        else:
+            parts.append(
+                group.sample(
+                    n=target_count,
+                    replace=True,
+                    random_state=RANDOM_SEED,
+                )
+            )
+    return (
+        pd.concat(parts, ignore_index=True).sort_values("date").reset_index(drop=True)
+    )
+
+
 def save_confusion_matrix(
     y_true: np.ndarray,
     y_pred: np.ndarray,
@@ -360,7 +385,9 @@ def save_error_analysis(
                     "name": name,
                     "sample_count": int(len(group)),
                     "accuracy": float(group["correct"].mean()),
-                    "log_loss": float(-np.log(np.clip(group["actual_probability"], 1e-15, 1)).mean()),
+                    "log_loss": float(
+                        -np.log(np.clip(group["actual_probability"], 1e-15, 1)).mean()
+                    ),
                     "brier_score": float(group["brier"].mean()),
                     "calibration_error": float(
                         abs(group["correct"].mean() - group["confidence"].mean())
@@ -461,8 +488,9 @@ def train_and_evaluate(
     label_encoder = LabelEncoder()
     label_encoder.fit(features["result"])
 
-    x_train = train[feature_columns]
-    y_train = label_encoder.transform(train["result"])
+    balanced_train = balance_training_classes(train)
+    x_train = balanced_train[feature_columns]
+    y_train = label_encoder.transform(balanced_train["result"])
     x_calibration = calibration[feature_columns]
     y_calibration = label_encoder.transform(calibration["result"])
     x_test = test[feature_columns]
@@ -537,6 +565,7 @@ def train_and_evaluate(
         "time_series_cv_accuracy_mean": float(np.nanmean(cv_scores)),
         "time_series_cv_accuracy_std": float(np.nanstd(cv_scores)),
         "train_rows": int(len(train)),
+        "balanced_train_rows": int(len(balanced_train)),
         "calibration_rows": int(len(calibration)),
         "test_rows": int(len(test)),
         "calibration": {
@@ -619,7 +648,6 @@ def load_cached_model(outputs_dir: Path) -> tuple[Any, LabelEncoder]:
     missing = [str(path) for path in (model_path, label_path) if not path.exists()]
     if missing:
         raise FileNotFoundError(
-            "--no-train requires cached model artifacts; missing: "
-            + ", ".join(missing)
+            "--no-train requires cached model artifacts; missing: " + ", ".join(missing)
         )
     return joblib.load(model_path), joblib.load(label_path)

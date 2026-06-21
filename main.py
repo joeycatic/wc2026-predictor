@@ -11,8 +11,20 @@ import pandas as pd
 
 from src.backtest import run_world_cup_backtest
 from src.features import build_feature_dataset, get_feature_columns
+from src.live_data import (
+    apply_what_if,
+    build_match_predictions,
+    fetch_live_matches,
+    load_processed_live_matches,
+    save_live_matches,
+    team_paths_frame,
+)
 from src.model import load_cached_model, train_and_evaluate
-from src.optional_data import build_data_status, optional_source_status
+from src.optional_data import (
+    build_data_status,
+    load_optional_inputs,
+    optional_source_status,
+)
 from src.player_features import load_team_player_features, save_team_player_features
 from src.preprocessing import configure_logging, load_and_preprocess
 from src.simulate import (
@@ -25,6 +37,7 @@ from src.simulate import (
     save_path_counts,
     save_round_counts,
     save_simulation_results,
+    simulation_integrity_report,
 )
 from src.tournament import load_tournament_config
 
@@ -66,6 +79,37 @@ def parse_args() -> argparse.Namespace:
         "--data-status",
         action="store_true",
         help="Print input-data coverage and exit.",
+    )
+    parser.add_argument(
+        "--sync-live-data",
+        action="store_true",
+        help="Fetch normalized WC 2026 fixtures/results and exit.",
+    )
+    parser.add_argument(
+        "--live-source",
+        choices=("auto", "football-data", "csv"),
+        default="auto",
+        help="Live fixture/result source.",
+    )
+    parser.add_argument(
+        "--from-current-results",
+        action="store_true",
+        help="Lock completed WC 2026 matches and simulate the remaining tournament.",
+    )
+    parser.add_argument(
+        "--what-if",
+        default=None,
+        help="Temporary completed-result override, e.g. 'Brazil 2-1 Morocco'.",
+    )
+    parser.add_argument(
+        "--team",
+        default=None,
+        help="Team name for focused path export.",
+    )
+    parser.add_argument(
+        "--paths",
+        action="store_true",
+        help="Export a focused team path table; use with --team.",
     )
     parser.add_argument(
         "--scoreline-model",
@@ -124,6 +168,16 @@ def _infer_cached_feature_flag(outputs_dir: Path) -> bool:
     return metrics.get("feature_set") == "player_enhanced"
 
 
+def _cached_feature_columns(outputs_dir: Path) -> list[str] | None:
+    metrics_path = outputs_dir / "metrics.json"
+    if not metrics_path.exists():
+        return None
+    with metrics_path.open("r", encoding="utf-8") as handle:
+        metrics = json.load(handle)
+    columns = metrics.get("feature_columns")
+    return columns if isinstance(columns, list) else None
+
+
 def _run_visualize_only(
     outputs_dir: Path,
     visualizations_dir: Path,
@@ -132,10 +186,14 @@ def _run_visualize_only(
     player_features: pd.DataFrame | None,
     use_player_features: bool,
     tournament_config,
+    optional_inputs,
+    feature_columns: list[str] | None,
 ) -> None:
     model, label_encoder = load_cached_model(outputs_dir)
     summary = _read_required_csv(outputs_dir / "simulation_results.csv")
-    group_stage_summary = _read_required_csv(outputs_dir / "group_stage_predictions.csv")
+    group_stage_summary = _read_required_csv(
+        outputs_dir / "group_stage_predictions.csv"
+    )
     round_counts = load_round_counts(outputs_dir / "round_counts.json")
     path_counts = load_path_counts(outputs_dir / "path_counts.json")
     simulations = int(sum(round_counts["Champion"].values()))
@@ -149,6 +207,8 @@ def _run_visualize_only(
         player_features=player_features,
         use_player_features=use_player_features,
         tournament_config=tournament_config,
+        optional_inputs=optional_inputs,
+        feature_columns=feature_columns,
     )
     generate_visualizations(
         model,
@@ -172,14 +232,30 @@ def main() -> None:
     processed_dir = project_root / "data" / "processed"
     outputs_dir = project_root / "outputs"
     visualizations_dir = project_root / "visualizations"
+    live_matches_path = processed_dir / "wc2026_live_matches.csv"
+
+    if args.sync_live_data:
+        live_result = fetch_live_matches(raw_dir, source=args.live_source)
+        save_live_matches(live_result.matches, live_matches_path)
+        print(
+            f"Saved {len(live_result.matches):,} matches from "
+            f"{live_result.source} to {live_matches_path}"
+        )
+        return
 
     print("1/5 Loading and validating raw CSVs...")
     results, elo = load_and_preprocess(raw_dir)
     tournament_config = load_tournament_config()
+    optional_inputs = load_optional_inputs(raw_dir)
     if args.use_player_features is None and (args.no_train or args.visualize_only):
         use_player_features = _infer_cached_feature_flag(outputs_dir)
     else:
         use_player_features = bool(args.use_player_features)
+    cached_feature_columns = (
+        _cached_feature_columns(outputs_dir)
+        if args.no_train or args.visualize_only
+        else None
+    )
     player_features = _load_player_features(raw_dir, processed_dir, use_player_features)
     data_status = build_data_status(
         results,
@@ -202,6 +278,8 @@ def main() -> None:
             player_features,
             use_player_features,
             tournament_config,
+            optional_inputs,
+            cached_feature_columns,
         )
         print("Done. Check /visualizations.")
         return
@@ -212,7 +290,12 @@ def main() -> None:
         features = None
     else:
         print("2/5 Engineering leakage-safe features...")
-        features = build_feature_dataset(results, elo, player_features=player_features)
+        features = build_feature_dataset(
+            results,
+            elo,
+            player_features=player_features,
+            optional_inputs=optional_inputs,
+        )
         processed_dir.mkdir(parents=True, exist_ok=True)
         features.to_csv(processed_dir / "match_features.csv", index=False)
         print(f"Feature rows: {len(features):,}")
@@ -235,6 +318,19 @@ def main() -> None:
             visualizations_dir,
         )
 
+    live_matches = None
+    live_source = "none"
+    if args.from_current_results or args.what_if:
+        live_result = fetch_live_matches(raw_dir, source=args.live_source)
+        live_source = live_result.source
+        live_matches = live_result.matches
+        if not live_matches.empty:
+            save_live_matches(live_matches, live_matches_path)
+        elif live_matches_path.exists():
+            live_matches = load_processed_live_matches(live_matches_path)
+            live_source = "processed"
+        live_matches = apply_what_if(live_matches, args.what_if)
+
     print(f"4/5 Running {args.simulations:,} Monte Carlo simulations...")
     summary, round_counts, context, group_stage_summary, path_counts = run_monte_carlo(
         model,
@@ -247,6 +343,9 @@ def main() -> None:
         tournament_config=tournament_config,
         seed=args.seed,
         scoreline_model=args.scoreline_model,
+        live_matches=live_matches,
+        optional_inputs=optional_inputs,
+        feature_columns=cached_feature_columns,
     )
     save_simulation_results(summary, outputs_dir / "simulation_results.csv")
     save_simulation_results(
@@ -266,6 +365,58 @@ def main() -> None:
     )
     save_round_counts(round_counts, outputs_dir / "round_counts.json")
     save_path_counts(path_counts, outputs_dir / "path_counts.json")
+    match_predictions = build_match_predictions(
+        model,
+        label_encoder,
+        context,
+        live_matches,
+        seed=args.seed,
+    )
+    save_simulation_results(match_predictions, outputs_dir / "match_predictions.csv")
+    if args.from_current_results or args.what_if:
+        save_simulation_results(summary, outputs_dir / "live_simulation_results.csv")
+        save_simulation_results(
+            group_stage_summary,
+            outputs_dir / "live_group_stage_predictions.csv",
+        )
+    if args.paths and args.team:
+        save_simulation_results(
+            team_paths_frame(
+                args.team, summary, group_stage_summary, match_predictions
+            ),
+            outputs_dir / "team_paths.csv",
+        )
+    run_metadata = {
+        "seed": args.seed,
+        "simulations": args.simulations,
+        "scoreline_model": args.scoreline_model,
+        "from_current_results": args.from_current_results,
+        "live_source": live_source,
+        "locked_match_count": (
+            0
+            if live_matches is None or live_matches.empty
+            else int(
+                live_matches["status"]
+                .astype(str)
+                .str.upper()
+                .isin(["FINISHED", "AWARDED"])
+                .sum()
+            )
+        ),
+        "latest_result_date": str(pd.Timestamp(results["date"].max()).date()),
+        "latest_elo_date": str(pd.Timestamp(elo["date"].max()).date()),
+        "player_feature_coverage": data_status["player_feature_coverage"],
+        "optional_sources": data_status["optional_sources"],
+        "simulation_integrity": simulation_integrity_report(
+            summary,
+            group_stage_summary,
+            round_counts,
+            args.simulations,
+        ),
+    }
+    outputs_dir.mkdir(parents=True, exist_ok=True)
+    with (outputs_dir / "run_metadata.json").open("w", encoding="utf-8") as handle:
+        json.dump(run_metadata, handle, indent=2)
 
     print("Top 10 predicted finalists:")
     finalist_view = summary.sort_values("final_probability", ascending=False).head(10)

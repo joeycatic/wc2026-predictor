@@ -7,6 +7,12 @@ import pandas as pd
 import pytest
 from sklearn.preprocessing import LabelEncoder
 
+from src.live_data import (
+    apply_what_if,
+    build_match_predictions,
+    normalize_match_frame,
+    parse_what_if,
+)
 from src.model import load_cached_model
 from src.optional_data import (
     load_betting_odds,
@@ -21,6 +27,8 @@ from src.simulate import (
     run_monte_carlo,
     sample_scoreline,
     save_bracket_slot_probabilities,
+    simulate_group_stage,
+    simulation_integrity_report,
     validate_round_counts,
 )
 from src.tournament import load_tournament_config
@@ -114,7 +122,7 @@ def test_round_count_validation_and_monte_carlo_summary_contract() -> None:
         ]
     )
 
-    summary, round_counts, *_ = run_monte_carlo(
+    summary, round_counts, _, group_stage_summary, _ = run_monte_carlo(
         ConstantModel(),
         label_encoder,
         results,
@@ -125,6 +133,10 @@ def test_round_count_validation_and_monte_carlo_summary_contract() -> None:
     )
 
     validate_round_counts(round_counts, 2)
+    integrity = simulation_integrity_report(
+        summary, group_stage_summary, round_counts, 2
+    )
+    assert integrity["valid"] is True
     assert summary["r32_probability"].sum() == pytest.approx(32)
     assert summary["r16_probability"].sum() == pytest.approx(16)
     assert summary["qf_probability"].sum() == pytest.approx(8)
@@ -139,8 +151,7 @@ def test_saved_bracket_slot_probabilities_include_round(tmp_path) -> None:
     r32.extend([group[2] for group in list(config.groups.values())[:8]])
     r32 = r32[:32]
     path = tuple(
-        tuple(stage)
-        for stage in [r32, r32[:16], r32[:8], r32[:4], r32[:2], r32[:1]]
+        tuple(stage) for stage in [r32, r32[:16], r32[:8], r32[:4], r32[:2], r32[:1]]
     )
     round_counts = {
         "R32": Counter(r32),
@@ -160,8 +171,108 @@ def test_saved_bracket_slot_probabilities_include_round(tmp_path) -> None:
     )
 
     assert (tmp_path / "slots.csv").exists()
-    assert set(["round", "slot_index", "slot_label", "team", "count", "probability"]).issubset(frame.columns)
-    assert len(build_bracket_probability_slots(Counter({path: 1}), round_counts, 1, config)["R32"]) == 32
+    assert set(
+        ["round", "slot_index", "slot_label", "team", "count", "probability"]
+    ).issubset(frame.columns)
+    assert (
+        len(
+            build_bracket_probability_slots(
+                Counter({path: 1}), round_counts, 1, config
+            )["R32"]
+        )
+        == 32
+    )
+
+
+def test_live_match_normalization_and_what_if_override() -> None:
+    frame = normalize_match_frame(
+        pd.DataFrame(
+            [
+                {
+                    "date": "2026-06-11T19:00:00Z",
+                    "home_team": "USA",
+                    "away_team": "Mexico",
+                    "status": "scheduled",
+                }
+            ]
+        )
+    )
+
+    override = parse_what_if("United States 2-1 Mexico")
+    updated = apply_what_if(frame, "United States 2-1 Mexico")
+
+    assert override["home_team"] == "United States"
+    assert updated.iloc[0]["status"] == "FINISHED"
+    assert updated.iloc[0]["home_score"] == 2
+    assert updated.iloc[0]["away_score"] == 1
+
+
+def test_completed_group_match_is_locked_into_simulated_table() -> None:
+    context = _context()
+    label_encoder = LabelEncoder().fit(["A", "B", "D"])
+    group = next(iter(context.tournament_config.groups))
+    team_a, team_b = context.tournament_config.groups[group][:2]
+    live_matches = normalize_match_frame(
+        pd.DataFrame(
+            [
+                {
+                    "stage": "Group",
+                    "group": group,
+                    "home_team": team_a,
+                    "away_team": team_b,
+                    "status": "FINISHED",
+                    "home_score": 0,
+                    "away_score": 4,
+                }
+            ]
+        )
+    )
+
+    _, table_rows = simulate_group_stage(
+        ConstantModel(),
+        label_encoder,
+        context,
+        np.random.default_rng(3),
+        {},
+        live_matches=live_matches,
+    )
+    row_a = next(row for row in table_rows if row["team"] == team_a)
+    row_b = next(row for row in table_rows if row["team"] == team_b)
+
+    assert row_a["ga"] >= 4
+    assert row_b["gf"] >= 4
+
+
+def test_match_predictions_score_completed_matches() -> None:
+    context = _context()
+    label_encoder = LabelEncoder().fit(["A", "B", "D"])
+    teams = list(context.team_features)[:2]
+    matches = normalize_match_frame(
+        pd.DataFrame(
+            [
+                {
+                    "stage": "Group",
+                    "home_team": teams[0],
+                    "away_team": teams[1],
+                    "status": "FINISHED",
+                    "home_score": 2,
+                    "away_score": 0,
+                }
+            ]
+        )
+    )
+
+    predictions = build_match_predictions(
+        ConstantModel(),
+        label_encoder,
+        context,
+        matches,
+        seed=5,
+    )
+
+    assert predictions.iloc[0]["actual_outcome"] == "A"
+    assert predictions.iloc[0]["predicted_outcome"] == "A"
+    assert bool(predictions.iloc[0]["prediction_correct"]) is True
 
 
 def test_optional_csv_loaders_and_absent_status(tmp_path) -> None:

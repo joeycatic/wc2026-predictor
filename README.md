@@ -93,9 +93,16 @@ python main.py --simulations 10000 --use-player-features --seed 42
 | `python main.py --simulations 10000 --skip-player-features --seed 42` | Train, evaluate, simulate, and plot with reproducible base features. |
 | `python main.py --use-player-features --seed 42` | Add player-strength aggregates when local Kaggle data exists. |
 | `python main.py --no-train --simulations 10000` | Load `outputs/ensemble_model.pkl` and rerun simulations. |
+| `python main.py --sync-live-data --live-source auto` | Fetch or normalize WC 2026 fixtures/results into `data/processed/wc2026_live_matches.csv`. |
+| `python main.py --from-current-results --simulations 10000` | Lock completed WC 2026 matches and simulate the remaining tournament. |
+| `python main.py --what-if "Brazil 2-1 Morocco" --from-current-results` | Run a temporary scenario override. |
+| `python main.py --team Spain --paths` | Export a focused path table to `outputs/team_paths.csv`. |
 | `python main.py --visualize-only` | Rebuild PNGs from saved CSV/JSON artifacts. |
 | `python main.py --data-status` | Print input coverage, latest dates, optional priors, and missing teams. |
 | `python main.py --scoreline-model legacy` | Use the old constrained scoreline sampler instead of Poisson. |
+| `streamlit run streamlit_app.py` | Open the local dashboard with completed, live, scheduled, group, bracket, and team views. |
+
+`make dashboard`, `make sync-live`, `make smoke`, `make test`, and `make lint` wrap the common commands.
 
 ## What data is needed?
 
@@ -124,6 +131,21 @@ Optional local priors:
 | `data/raw/wc2026_fixtures.csv` | `date`, `stage`, `home_team`, `away_team`, optional `venue`, `city`, `country` |
 
 If optional files are missing, the pipeline records that in `outputs/metrics.json` and continues.
+
+Live fixtures/results use a provider adapter with CSV fallback. Set
+`FOOTBALL_DATA_API_TOKEN` to fetch from football-data.org, or maintain
+`data/raw/wc2026_fixtures.csv` manually. A local `.env` file is supported and
+already ignored by Git:
+
+```bash
+FOOTBALL_DATA_API_TOKEN=your_token_here
+```
+
+Supported live/result columns include
+`date`, `stage`, `group`, `home_team`, `away_team`, `status`, `minute`,
+`home_score`, `away_score`, and `venue`. Completed rows with `FINISHED` or
+`AWARDED` status are locked into `--from-current-results` simulations; in-play
+rows are displayed in the dashboard but simulated as unfinished in v1.
 
 ## Player features
 
@@ -166,6 +188,11 @@ After running `python main.py`, analytical artifacts are written to `outputs/`.
 | Group-stage probabilities | `outputs/group_stage_predictions.csv` |
 | Most-likely group tables | `outputs/group_most_likely_tables.csv` |
 | Bracket slot probabilities | `outputs/bracket_slot_probabilities.csv` |
+| Fixture-level predictions | `outputs/match_predictions.csv` |
+| Live/current simulation summary | `outputs/live_simulation_results.csv` |
+| Live/current group probabilities | `outputs/live_group_stage_predictions.csv` |
+| Focused team paths | `outputs/team_paths.csv` |
+| Run metadata and data coverage | `outputs/run_metadata.json` |
 | Round counters | `outputs/round_counts.json` |
 | Path counters | `outputs/path_counts.json` |
 | Historical backtest | `outputs/backtest_results.csv` |

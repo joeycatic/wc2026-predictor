@@ -27,6 +27,7 @@ from src.features import (
     stage_to_weight,
     team_snapshot,
 )
+from src.optional_data import optional_pair_features, team_optional_snapshot
 from src.player_features import (
     build_player_lookup,
     lookup_player_snapshot,
@@ -165,6 +166,8 @@ def build_prediction_context(
     player_features: pd.DataFrame | None = None,
     use_player_features: bool = False,
     tournament_config: TournamentConfig | None = None,
+    optional_inputs: dict[str, pd.DataFrame | None] | None = None,
+    feature_columns: list[str] | None = None,
 ) -> PredictionContext:
     """Precompute team and pair histories for fast future predictions.
 
@@ -219,6 +222,9 @@ def build_prediction_context(
             player_defaults,
             before_year=False,
         )
+        optional_values = team_optional_snapshot(
+            optional_inputs, normalized, prediction_date
+        )
         if normalized not in player_lookup:
             missing_player.append(team)
         team_features[team] = {
@@ -227,6 +233,7 @@ def build_prediction_context(
             "goals_scored_avg": snapshot.goals_scored_avg,
             "goals_conceded_avg": snapshot.goals_conceded_avg,
             "consistency": snapshot.consistency,
+            **{f"optional_{key}": value for key, value in optional_values.items()},
             **{f"player_{key}": value for key, value in player_values.items()},
         }
     if missing_elo:
@@ -243,7 +250,7 @@ def build_prediction_context(
         prediction_date,
         config,
         use_player_features,
-        get_feature_columns(use_player_features),
+        feature_columns or get_feature_columns(use_player_features),
     )
 
 
@@ -304,6 +311,17 @@ def feature_frame_from_context(
         "h2h_wins_b": h2h_b,
         "stage_weight": stage_to_weight(stage),
     }
+    optional_a = {
+        key.removeprefix("optional_"): value
+        for key, value in stats_a.items()
+        if key.startswith("optional_")
+    }
+    optional_b = {
+        key.removeprefix("optional_"): value
+        for key, value in stats_b.items()
+        if key.startswith("optional_")
+    }
+    row.update(optional_pair_features(optional_a, optional_b))
     if context.use_player_features:
         player_a = {
             key.removeprefix("player_"): value
@@ -510,6 +528,57 @@ def sample_scoreline(
     )
 
 
+def group_fixture_rows(
+    group: str,
+    teams: list[str],
+    live_matches: pd.DataFrame | None = None,
+) -> list[dict[str, Any]]:
+    """Return fixture rows for a group, falling back to all group combinations."""
+    if live_matches is None or live_matches.empty:
+        return [
+            {"home_team": team_a, "away_team": team_b, "locked": False}
+            for team_a, team_b in combinations(teams, 2)
+        ]
+
+    team_set = set(teams)
+    frame = live_matches.copy()
+    if "group" in frame.columns and frame["group"].astype(str).str.len().gt(0).any():
+        group_mask = frame["group"].astype(str).str.upper().str.endswith(group.upper())
+    else:
+        group_mask = pd.Series(True, index=frame.index)
+    team_mask = frame["home_team"].isin(team_set) & frame["away_team"].isin(team_set)
+    rows: list[dict[str, Any]] = []
+    seen_pairs: set[tuple[str, str]] = set()
+    for _, fixture in frame[group_mask & team_mask].iterrows():
+        home = str(fixture["home_team"])
+        away = str(fixture["away_team"])
+        pair = tuple(sorted((home, away)))
+        if pair in seen_pairs:
+            continue
+        seen_pairs.add(pair)
+        status = str(fixture.get("status", "SCHEDULED")).upper()
+        locked = (
+            status in {"FINISHED", "AWARDED"}
+            and pd.notna(fixture.get("home_score"))
+            and pd.notna(fixture.get("away_score"))
+        )
+        rows.append(
+            {
+                "home_team": home,
+                "away_team": away,
+                "home_score": fixture.get("home_score"),
+                "away_score": fixture.get("away_score"),
+                "locked": locked,
+            }
+        )
+
+    for team_a, team_b in combinations(teams, 2):
+        pair = tuple(sorted((team_a, team_b)))
+        if pair not in seen_pairs:
+            rows.append({"home_team": team_a, "away_team": team_b, "locked": False})
+    return rows
+
+
 def simulate_group_stage(
     model: Any,
     label_encoder: LabelEncoder,
@@ -517,6 +586,7 @@ def simulate_group_stage(
     rng: np.random.Generator,
     cache: dict[tuple[str, str, str], dict[str, float]],
     scoreline_model: str = "poisson",
+    live_matches: pd.DataFrame | None = None,
 ) -> tuple[list[str], list[dict[str, Any]]]:
     """Simulate all group-stage matches and select 32 qualifiers.
 
@@ -549,25 +619,41 @@ def simulate_group_stage(
             }
             for team in teams
         }
-        for team_a, team_b in combinations(teams, 2):
-            probabilities = predict_probabilities(
-                model, label_encoder, team_a, team_b, context, "Group", cache
-            )
-            outcome = str(
-                rng.choice(
-                    ["A", "D", "B"],
-                    p=[probabilities["A"], probabilities["D"], probabilities["B"]],
+        for fixture in group_fixture_rows(group, teams, live_matches):
+            team_a = fixture["home_team"]
+            team_b = fixture["away_team"]
+            if fixture["locked"]:
+                goals_a = int(fixture["home_score"])
+                goals_b = int(fixture["away_score"])
+                if goals_a > goals_b:
+                    outcome = "A"
+                elif goals_b > goals_a:
+                    outcome = "B"
+                else:
+                    outcome = "D"
+            else:
+                probabilities = predict_probabilities(
+                    model, label_encoder, team_a, team_b, context, "Group", cache
                 )
-            )
-            goals_a, goals_b = sample_scoreline(
-                outcome,
-                team_a,
-                team_b,
-                context,
-                rng,
-                scoreline_model=scoreline_model,
-                draw_probability=probabilities["D"],
-            )
+                outcome = str(
+                    rng.choice(
+                        ["A", "D", "B"],
+                        p=[
+                            probabilities["A"],
+                            probabilities["D"],
+                            probabilities["B"],
+                        ],
+                    )
+                )
+                goals_a, goals_b = sample_scoreline(
+                    outcome,
+                    team_a,
+                    team_b,
+                    context,
+                    rng,
+                    scoreline_model=scoreline_model,
+                    draw_probability=probabilities["D"],
+                )
             table[team_a]["gf"] += goals_a
             table[team_a]["ga"] += goals_b
             table[team_b]["gf"] += goals_b
@@ -808,7 +894,8 @@ def knockout_advancement_probability(
     regulation_share = probabilities["A"] / non_draw if non_draw else 0.5
     return float(
         np.clip(
-            probabilities["A"] + probabilities["D"] * (0.65 * elo_tiebreak + 0.35 * regulation_share),
+            probabilities["A"]
+            + probabilities["D"] * (0.65 * elo_tiebreak + 0.35 * regulation_share),
             0.02,
             0.98,
         )
@@ -904,6 +991,9 @@ def run_monte_carlo(
     tournament_config: TournamentConfig | None = None,
     seed: int = RANDOM_SEED,
     scoreline_model: str = "poisson",
+    live_matches: pd.DataFrame | None = None,
+    optional_inputs: dict[str, pd.DataFrame | None] | None = None,
+    feature_columns: list[str] | None = None,
 ) -> tuple[
     pd.DataFrame,
     dict[str, Counter[str]],
@@ -924,6 +1014,9 @@ def run_monte_carlo(
         tournament_config: Optional tournament configuration.
         seed: Random seed for reproducible simulations.
         scoreline_model: Score sampler, either poisson or legacy.
+        live_matches: Optional normalized fixtures/results with completed scores.
+        optional_inputs: Optional ranking and betting prior data.
+        feature_columns: Optional feature column contract for cached models.
 
     Returns:
         Aggregated results, round counters, prediction context, group-stage summary,
@@ -940,6 +1033,8 @@ def run_monte_carlo(
         player_features=player_features,
         use_player_features=use_player_features,
         tournament_config=tournament_config,
+        optional_inputs=optional_inputs,
+        feature_columns=feature_columns,
     )
     cache = precompute_probability_cache(
         model,
@@ -966,6 +1061,7 @@ def run_monte_carlo(
             rng,
             cache,
             scoreline_model=scoreline_model,
+            live_matches=live_matches,
         )
         group_stage_rows.extend(table_rows)
         champion, rounds = simulate_knockouts(
@@ -1020,7 +1116,9 @@ def save_simulation_results(summary: pd.DataFrame, output_path: Path) -> None:
     summary.to_csv(output_path, index=False)
 
 
-def validate_round_counts(round_counts: dict[str, Counter[str]], simulations: int) -> None:
+def validate_round_counts(
+    round_counts: dict[str, Counter[str]], simulations: int
+) -> None:
     """Validate expected total entrants per knockout round."""
     expected = {"R32": 32, "R16": 16, "QF": 8, "SF": 4, "Final": 2, "Champion": 1}
     for stage, entrants in expected.items():
@@ -1031,7 +1129,98 @@ def validate_round_counts(round_counts: dict[str, Counter[str]], simulations: in
             )
 
 
-def round_counts_to_jsonable(round_counts: dict[str, Counter[str]]) -> dict[str, dict[str, int]]:
+def simulation_integrity_report(
+    summary: pd.DataFrame,
+    group_stage_summary: pd.DataFrame,
+    round_counts: dict[str, Counter[str]],
+    simulations: int,
+) -> dict[str, Any]:
+    """Return numeric simulation integrity checks for metadata and dashboards."""
+    expected_rounds = {
+        "R32": 32,
+        "R16": 16,
+        "QF": 8,
+        "SF": 4,
+        "Final": 2,
+        "Champion": 1,
+    }
+    round_totals = {}
+    for stage, entrants in expected_rounds.items():
+        expected = entrants * simulations
+        actual = int(sum(round_counts[stage].values()))
+        round_totals[stage] = {
+            "expected": expected,
+            "actual": actual,
+            "valid": actual == expected,
+        }
+
+    expected_probabilities = {
+        "r32_probability": 32.0,
+        "r16_probability": 16.0,
+        "qf_probability": 8.0,
+        "sf_probability": 4.0,
+        "final_probability": 2.0,
+        "win_probability": 1.0,
+    }
+    probability_totals = {}
+    for column, expected in expected_probabilities.items():
+        actual = float(summary[column].sum()) if column in summary else 0.0
+        probability_totals[column] = {
+            "expected": expected,
+            "actual": actual,
+            "valid": bool(np.isclose(actual, expected, atol=1e-9)),
+        }
+
+    rank_columns = [
+        "rank_1_probability",
+        "rank_2_probability",
+        "rank_3_probability",
+        "rank_4_probability",
+    ]
+    if set(rank_columns).issubset(group_stage_summary.columns):
+        rank_valid = bool(
+            np.allclose(group_stage_summary[rank_columns].sum(axis=1), 1.0, atol=1e-9)
+        )
+    else:
+        rank_valid = False
+
+    qualification_columns = {
+        "qualification_probability",
+        "rank_1_probability",
+        "rank_2_probability",
+        "best_third_probability",
+    }
+    if qualification_columns.issubset(group_stage_summary.columns):
+        qualification = (
+            group_stage_summary["rank_1_probability"]
+            + group_stage_summary["rank_2_probability"]
+            + group_stage_summary["best_third_probability"]
+        )
+        qualification_valid = bool(
+            np.allclose(
+                group_stage_summary["qualification_probability"],
+                qualification,
+                atol=1e-9,
+            )
+        )
+    else:
+        qualification_valid = False
+
+    return {
+        "round_totals": round_totals,
+        "probability_totals": probability_totals,
+        "group_rank_probabilities_valid": rank_valid,
+        "group_qualification_probabilities_valid": qualification_valid,
+        "valid": all(row["valid"] for row in round_totals.values())
+        and all(row["valid"] for row in probability_totals.values())
+        and rank_valid
+        and qualification_valid,
+    }
+
+
+def round_counts_to_jsonable(
+    round_counts: dict[str, Counter[str]],
+) -> dict[str, dict[str, int]]:
     """Convert round counters into JSON-serializable dictionaries."""
     return {
         stage: {team: int(count) for team, count in counter.items()}
@@ -1039,13 +1228,15 @@ def round_counts_to_jsonable(round_counts: dict[str, Counter[str]]) -> dict[str,
     }
 
 
-def round_counts_from_jsonable(payload: dict[str, dict[str, int]]) -> dict[str, Counter[str]]:
+def round_counts_from_jsonable(
+    payload: dict[str, dict[str, int]],
+) -> dict[str, Counter[str]]:
     """Convert saved round-count JSON back into counters."""
     return {stage: Counter(values) for stage, values in payload.items()}
 
 
 def path_counts_to_jsonable(
-    path_counts: Counter[tuple[tuple[str, ...], ...]]
+    path_counts: Counter[tuple[tuple[str, ...], ...]],
 ) -> list[dict[str, Any]]:
     """Convert path counters into JSON-serializable rows."""
     rows = []
@@ -1063,7 +1254,7 @@ def path_counts_to_jsonable(
 
 
 def path_counts_from_jsonable(
-    payload: list[dict[str, Any]]
+    payload: list[dict[str, Any]],
 ) -> Counter[tuple[tuple[str, ...], ...]]:
     """Convert saved path-count rows back into a counter."""
     counter: Counter[tuple[tuple[str, ...], ...]] = Counter()
@@ -1440,7 +1631,9 @@ def bracket_probability_slots_frame(
     config: TournamentConfig,
 ) -> pd.DataFrame:
     """Return bracket slot probabilities as a flat dataframe."""
-    slots = build_bracket_probability_slots(path_counts, round_counts, simulations, config)
+    slots = build_bracket_probability_slots(
+        path_counts, round_counts, simulations, config
+    )
     rows = []
     for stage, stage_slots in slots.items():
         for slot in stage_slots:
@@ -1482,7 +1675,9 @@ def plot_team_odds_table(
         "win_probability",
     ]
     labels = ["R32", "R16", "QF", "SF", "Final", "Win"]
-    data = summary.sort_values("win_probability", ascending=False).reset_index(drop=True)
+    data = summary.sort_values("win_probability", ascending=False).reset_index(
+        drop=True
+    )
     values = data[columns].to_numpy() * 100
     annotations = np.vectorize(lambda value: f"{value:.1f}%")(values)
     wrapped_teams = ["\n".join(textwrap.wrap(team, width=18)) for team in data["team"]]
@@ -1501,7 +1696,9 @@ def plot_team_odds_table(
     )
     note = ""
     if simulations:
-        max_se = np.sqrt(data["win_probability"] * (1 - data["win_probability"]) / simulations).max()
+        max_se = np.sqrt(
+            data["win_probability"] * (1 - data["win_probability"]) / simulations
+        ).max()
         note = f"\nWin-probability Monte Carlo SE up to +/- {max_se * 100:.2f} pp"
     ax.set_title(f"World Cup 2026 Team Round Odds{note}")
     ax.set_xlabel("")
@@ -1537,7 +1734,9 @@ def plot_group_most_likely_tables(
                 "qualification_probability",
             ]
         ].copy()
-        display["team"] = display["team"].map(lambda value: "\n".join(textwrap.wrap(value, 16)))
+        display["team"] = display["team"].map(
+            lambda value: "\n".join(textwrap.wrap(value, 16))
+        )
         for column in [
             "projected_wins",
             "projected_draws",

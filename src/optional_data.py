@@ -13,6 +13,16 @@ from src.tournament import TournamentConfig, all_config_teams
 FIFA_RANKINGS_FILE = "fifa_rankings.csv"
 BETTING_ODDS_FILE = "betting_odds.csv"
 WC2026_FIXTURES_FILE = "wc2026_fixtures.csv"
+OPTIONAL_FEATURE_COLUMNS = [
+    "fifa_rank_diff",
+    "fifa_points_diff",
+    "betting_implied_win_probability_a",
+    "betting_implied_win_probability_b",
+    "betting_implied_win_probability_diff",
+]
+DEFAULT_FIFA_RANK = 100.0
+DEFAULT_FIFA_POINTS = 1500.0
+DEFAULT_TITLE_PROBABILITY = 1 / 48
 
 
 def _load_optional_csv(path: Path) -> pd.DataFrame | None:
@@ -90,7 +100,89 @@ def load_optional_inputs(raw_dir: Path) -> dict[str, pd.DataFrame | None]:
     }
 
 
-def _team_coverage(frame: pd.DataFrame | None, team_column: str, teams: list[str]) -> int:
+def latest_team_prior(
+    frame: pd.DataFrame | None,
+    team: str,
+    date: pd.Timestamp,
+    value_columns: list[str],
+) -> dict[str, float]:
+    """Return the latest dated optional values for a team before a date."""
+    if frame is None or frame.empty:
+        return {}
+    rows = frame[
+        (frame["team"] == normalize_team_name(team))
+        & (frame["date"] <= pd.Timestamp(date))
+    ].sort_values("date")
+    if rows.empty:
+        return {}
+    row = rows.iloc[-1]
+    return {
+        column: float(row[column])
+        for column in value_columns
+        if column in row and pd.notna(row[column])
+    }
+
+
+def team_optional_snapshot(
+    optional_inputs: dict[str, pd.DataFrame | None] | None,
+    team: str,
+    date: pd.Timestamp,
+) -> dict[str, float]:
+    """Return ranking and betting priors for one team with neutral defaults."""
+    optional_inputs = optional_inputs or {}
+    ranking = latest_team_prior(
+        optional_inputs.get("fifa_rankings"),
+        team,
+        date,
+        ["rank", "points"],
+    )
+    betting = latest_team_prior(
+        optional_inputs.get("betting_odds"),
+        team,
+        date,
+        ["implied_win_probability", "win_odds"],
+    )
+    implied_probability = betting.get("implied_win_probability")
+    if implied_probability is None and betting.get("win_odds", 0) > 0:
+        implied_probability = 1 / betting["win_odds"]
+    return {
+        "fifa_rank": ranking.get("rank", DEFAULT_FIFA_RANK),
+        "fifa_points": ranking.get("points", DEFAULT_FIFA_POINTS),
+        "betting_implied_win_probability": float(
+            implied_probability
+            if implied_probability is not None
+            else DEFAULT_TITLE_PROBABILITY
+        ),
+    }
+
+
+def optional_pair_features(
+    team_a_values: dict[str, float],
+    team_b_values: dict[str, float],
+) -> dict[str, float]:
+    """Convert optional team priors into model feature columns."""
+    rank_a = team_a_values.get("fifa_rank", DEFAULT_FIFA_RANK)
+    rank_b = team_b_values.get("fifa_rank", DEFAULT_FIFA_RANK)
+    points_a = team_a_values.get("fifa_points", DEFAULT_FIFA_POINTS)
+    points_b = team_b_values.get("fifa_points", DEFAULT_FIFA_POINTS)
+    probability_a = team_a_values.get(
+        "betting_implied_win_probability", DEFAULT_TITLE_PROBABILITY
+    )
+    probability_b = team_b_values.get(
+        "betting_implied_win_probability", DEFAULT_TITLE_PROBABILITY
+    )
+    return {
+        "fifa_rank_diff": rank_b - rank_a,
+        "fifa_points_diff": points_a - points_b,
+        "betting_implied_win_probability_a": probability_a,
+        "betting_implied_win_probability_b": probability_b,
+        "betting_implied_win_probability_diff": probability_a - probability_b,
+    }
+
+
+def _team_coverage(
+    frame: pd.DataFrame | None, team_column: str, teams: list[str]
+) -> int:
     if frame is None or frame.empty:
         return 0
     return len(set(frame[team_column].dropna()) & set(teams))
@@ -102,7 +194,11 @@ def optional_source_status(
     optional_inputs: dict[str, pd.DataFrame | None] | None = None,
 ) -> dict[str, Any]:
     """Return compact availability and coverage metadata for optional CSV inputs."""
-    inputs = optional_inputs if optional_inputs is not None else load_optional_inputs(raw_dir)
+    inputs = (
+        optional_inputs
+        if optional_inputs is not None
+        else load_optional_inputs(raw_dir)
+    )
     teams = all_config_teams(config)
     rankings = inputs.get("fifa_rankings")
     betting = inputs.get("betting_odds")
@@ -134,7 +230,9 @@ def optional_source_status(
             "present": fixtures is not None,
             "rows": 0 if fixtures is None else int(len(fixtures)),
             "team_coverage": len(fixture_teams & set(teams)),
-            "missing_teams": teams if fixtures is None else sorted(set(teams) - fixture_teams),
+            "missing_teams": (
+                teams if fixtures is None else sorted(set(teams) - fixture_teams)
+            ),
             "has_venue_fields": bool(
                 fixtures is not None
                 and {"venue", "city", "country"} & set(fixtures.columns)
@@ -153,7 +251,9 @@ def build_data_status(
     """Build the CLI data-status report payload."""
     tournament_teams = all_config_teams(config)
     player_teams = (
-        set() if player_features is None or player_features.empty else set(player_features["team"])
+        set()
+        if player_features is None or player_features.empty
+        else set(player_features["team"])
     )
     optional_status = optional_source_status(raw_dir, config)
     result_teams = set(results["home_team"]) | set(results["away_team"])
@@ -168,9 +268,12 @@ def build_data_status(
             "status": (
                 "neutral_fallback"
                 if not player_teams
-                else "real"
-                if len(player_teams & set(tournament_teams)) == len(tournament_teams)
-                else "partial"
+                else (
+                    "real"
+                    if len(player_teams & set(tournament_teams))
+                    == len(tournament_teams)
+                    else "partial"
+                )
             ),
             "covered_teams": len(player_teams & set(tournament_teams)),
             "missing_teams": sorted(set(tournament_teams) - player_teams),

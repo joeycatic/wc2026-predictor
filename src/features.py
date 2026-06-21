@@ -9,6 +9,11 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from src.optional_data import (
+    OPTIONAL_FEATURE_COLUMNS,
+    optional_pair_features,
+    team_optional_snapshot,
+)
 from src.player_features import (
     PLAYER_FEATURE_COLUMNS,
     build_player_lookup,
@@ -31,6 +36,7 @@ BASE_FEATURE_COLUMNS = [
     "h2h_wins_a",
     "h2h_wins_b",
     "stage_weight",
+    *OPTIONAL_FEATURE_COLUMNS,
 ]
 FEATURE_COLUMNS = BASE_FEATURE_COLUMNS + PLAYER_FEATURE_COLUMNS
 
@@ -252,6 +258,7 @@ def build_feature_dataset(
     results: pd.DataFrame,
     elo: pd.DataFrame,
     player_features: pd.DataFrame | None = None,
+    optional_inputs: dict[str, pd.DataFrame | None] | None = None,
 ) -> pd.DataFrame:
     """Build a leakage-safe feature matrix from historical matches.
 
@@ -295,6 +302,8 @@ def build_feature_dataset(
         player_b = lookup_player_snapshot(
             player_lookup, team_b, match_date.year, player_defaults, before_year=True
         )
+        optional_a = team_optional_snapshot(optional_inputs, team_a, match_date)
+        optional_b = team_optional_snapshot(optional_inputs, team_b, match_date)
 
         row = {
             "date": match_date,
@@ -317,6 +326,7 @@ def build_feature_dataset(
             "stage_weight": stage_to_weight(match.get("stage", "Group")),
             "result": result_label(score_a, score_b),
         }
+        row.update(optional_pair_features(optional_a, optional_b))
         row.update(player_pair_features(player_a, player_b))
         rows.append(row)
 
@@ -337,6 +347,7 @@ def build_match_features(
     stage: str = "Group",
     player_features: pd.DataFrame | None = None,
     use_player_features: bool = False,
+    optional_inputs: dict[str, pd.DataFrame | None] | None = None,
 ) -> pd.DataFrame:
     """Build a one-row feature frame for a future match.
 
@@ -389,6 +400,12 @@ def build_match_features(
         "h2h_wins_b": h2h_b,
         "stage_weight": stage_to_weight(stage),
     }
+    row.update(
+        optional_pair_features(
+            team_optional_snapshot(optional_inputs, normalized_a, match_date),
+            team_optional_snapshot(optional_inputs, normalized_b, match_date),
+        )
+    )
     if use_player_features:
         player_lookup = build_player_lookup(player_features)
         player_defaults = player_feature_defaults(player_features)
