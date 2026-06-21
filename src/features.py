@@ -298,6 +298,9 @@ def build_feature_dataset(
 
         row = {
             "date": match_date,
+            "year": int(match_date.year),
+            "tournament": str(match.get("tournament", "Unknown")),
+            "stage": str(match.get("stage", "Group")),
             "team_a": team_a,
             "team_b": team_b,
             "elo_diff": elo_a - elo_b,

@@ -14,6 +14,8 @@ jobs:
           python-version: "3.11"
       - name: Install dependencies
         run: pip install -r requirements.txt
+      - name: Run Ruff
+        run: ruff check .
       - name: Run tests
         run: pytest
       - name: Create CLI smoke fixtures
@@ -54,4 +56,4 @@ jobs:
           pd.DataFrame(elo).to_csv(raw / "elo_ratings.csv", index=False)
           PY
       - name: Run CLI smoke test
-        run: python main.py --simulations 10 --skip-player-features
+        run: python main.py --simulations 10 --skip-player-features --seed 42

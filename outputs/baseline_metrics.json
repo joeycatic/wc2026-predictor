@@ -1,10 +1,10 @@
 {
   "elo_only": {
-    "accuracy": 0.6192919445869677,
-    "macro_f1": 0.4562723661408914,
-    "brier_score": 0.4980673407511374,
-    "log_loss": 0.8527418020318559,
-    "expected_calibration_error": 0.04777027486896776,
+    "accuracy": 0.6210670314637483,
+    "macro_f1": 0.45899329285425267,
+    "brier_score": 0.49842330453483824,
+    "log_loss": 0.853534254175102,
+    "expected_calibration_error": 0.03753042271629674,
     "features": [
       "elo_diff",
       "elo_a",
@@ -12,11 +12,11 @@
     ]
   },
   "elo_player": {
-    "accuracy": 0.620831195484864,
-    "macro_f1": 0.45724259286223434,
-    "brier_score": 0.4974226062830421,
-    "log_loss": 0.8515161241160676,
-    "expected_calibration_error": 0.04103703854403095,
+    "accuracy": 0.6203830369357045,
+    "macro_f1": 0.4580724196692496,
+    "brier_score": 0.49756585031064504,
+    "log_loss": 0.8520502241675255,
+    "expected_calibration_error": 0.04138416758551983,
     "features": [
       "elo_diff",
       "elo_a",

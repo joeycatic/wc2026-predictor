@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import logging
+import textwrap
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from itertools import combinations
@@ -43,6 +45,7 @@ RANDOM_SEED = 42
 ACCENT = "#00FF87"
 WHITE = "#FFFFFF"
 LOGGER = logging.getLogger(__name__)
+ROUND_STAGES = ("R32", "R16", "QF", "SF", "Final", "Champion")
 
 WC2026_GROUPS: dict[str, list[str]] = {
     "A": ["Mexico", "South Africa", "South Korea", "Czech Republic"],
@@ -317,7 +320,7 @@ def feature_frame_from_context(
 
 
 def predict_probabilities(
-    model: VotingClassifier,
+    model: Any,
     label_encoder: LabelEncoder,
     team_a: str,
     team_b: str,
@@ -357,7 +360,7 @@ def predict_probabilities(
 
 
 def precompute_probability_cache(
-    model: VotingClassifier,
+    model: Any,
     label_encoder: LabelEncoder,
     context: PredictionContext,
     stages: list[str],
@@ -403,7 +406,7 @@ def precompute_probability_cache(
     return cache
 
 
-def sample_scoreline(
+def sample_legacy_scoreline(
     outcome: str,
     team_a: str,
     team_b: str,
@@ -443,12 +446,77 @@ def sample_scoreline(
     return min(goals_a, 7), min(goals_b, 7)
 
 
+def sample_poisson_scoreline(
+    outcome: str,
+    team_a: str,
+    team_b: str,
+    context: PredictionContext,
+    rng: np.random.Generator,
+    draw_probability: float = 0.25,
+) -> tuple[int, int]:
+    """Sample a Poisson scoreline constrained to the selected outcome."""
+    stats_a = context.team_features[team_a]
+    stats_b = context.team_features[team_b]
+    elo_delta = (stats_a["elo"] - stats_b["elo"]) / 400
+    attack_a = (stats_a["goals_scored_avg"] + stats_b["goals_conceded_avg"]) / 2
+    attack_b = (stats_b["goals_scored_avg"] + stats_a["goals_conceded_avg"]) / 2
+    expected_a = float(np.clip(attack_a * np.exp(0.18 * elo_delta), 0.20, 3.80))
+    expected_b = float(np.clip(attack_b * np.exp(-0.18 * elo_delta), 0.20, 3.80))
+
+    if outcome == "D":
+        draw_lambda = float(np.clip((expected_a + expected_b) / 2, 0.2, 2.8))
+        if draw_probability > 0.34:
+            draw_lambda *= 0.85
+        goals = int(min(rng.poisson(draw_lambda), 5))
+        return goals, goals
+
+    for _ in range(40):
+        goals_a = int(min(rng.poisson(expected_a), 7))
+        goals_b = int(min(rng.poisson(expected_b), 7))
+        if outcome == "A" and goals_a > goals_b:
+            return goals_a, goals_b
+        if outcome == "B" and goals_b > goals_a:
+            return goals_a, goals_b
+
+    goals_a = int(min(rng.poisson(expected_a), 6))
+    goals_b = int(min(rng.poisson(expected_b), 6))
+    if outcome == "A":
+        return max(goals_a, goals_b + 1), goals_b
+    return goals_a, max(goals_b, goals_a + 1)
+
+
+def sample_scoreline(
+    outcome: str,
+    team_a: str,
+    team_b: str,
+    context: PredictionContext,
+    rng: np.random.Generator,
+    *,
+    scoreline_model: str = "poisson",
+    draw_probability: float = 0.25,
+) -> tuple[int, int]:
+    """Sample a scoreline using the requested scoreline model."""
+    if scoreline_model == "legacy":
+        return sample_legacy_scoreline(outcome, team_a, team_b, context, rng)
+    if scoreline_model != "poisson":
+        raise ValueError("scoreline_model must be 'poisson' or 'legacy'")
+    return sample_poisson_scoreline(
+        outcome,
+        team_a,
+        team_b,
+        context,
+        rng,
+        draw_probability=draw_probability,
+    )
+
+
 def simulate_group_stage(
-    model: VotingClassifier,
+    model: Any,
     label_encoder: LabelEncoder,
     context: PredictionContext,
     rng: np.random.Generator,
     cache: dict[tuple[str, str, str], dict[str, float]],
+    scoreline_model: str = "poisson",
 ) -> tuple[list[str], list[dict[str, Any]]]:
     """Simulate all group-stage matches and select 32 qualifiers.
 
@@ -469,7 +537,16 @@ def simulate_group_stage(
 
     for group, teams in context.tournament_config.groups.items():
         table = {
-            team: {"team": team, "group": group, "points": 0, "gf": 0, "ga": 0}
+            team: {
+                "team": team,
+                "group": group,
+                "points": 0,
+                "gf": 0,
+                "ga": 0,
+                "wins": 0,
+                "draws": 0,
+                "losses": 0,
+            }
             for team in teams
         }
         for team_a, team_b in combinations(teams, 2):
@@ -482,18 +559,32 @@ def simulate_group_stage(
                     p=[probabilities["A"], probabilities["D"], probabilities["B"]],
                 )
             )
-            goals_a, goals_b = sample_scoreline(outcome, team_a, team_b, context, rng)
+            goals_a, goals_b = sample_scoreline(
+                outcome,
+                team_a,
+                team_b,
+                context,
+                rng,
+                scoreline_model=scoreline_model,
+                draw_probability=probabilities["D"],
+            )
             table[team_a]["gf"] += goals_a
             table[team_a]["ga"] += goals_b
             table[team_b]["gf"] += goals_b
             table[team_b]["ga"] += goals_a
             if outcome == "A":
                 table[team_a]["points"] += 3
+                table[team_a]["wins"] += 1
+                table[team_b]["losses"] += 1
             elif outcome == "B":
                 table[team_b]["points"] += 3
+                table[team_b]["wins"] += 1
+                table[team_a]["losses"] += 1
             else:
                 table[team_a]["points"] += 1
                 table[team_b]["points"] += 1
+                table[team_a]["draws"] += 1
+                table[team_b]["draws"] += 1
 
         ranked = sorted(
             table.values(),
@@ -596,6 +687,26 @@ def summarize_group_stage_results(
                         if not team_rows.empty
                         else 0.0
                     ),
+                    "expected_goals_against": (
+                        float(team_rows["ga"].sum() / simulations)
+                        if not team_rows.empty
+                        else 0.0
+                    ),
+                    "expected_wins": (
+                        float(team_rows["wins"].sum() / simulations)
+                        if not team_rows.empty and "wins" in team_rows
+                        else 0.0
+                    ),
+                    "expected_draws": (
+                        float(team_rows["draws"].sum() / simulations)
+                        if not team_rows.empty and "draws" in team_rows
+                        else 0.0
+                    ),
+                    "expected_losses": (
+                        float(team_rows["losses"].sum() / simulations)
+                        if not team_rows.empty and "losses" in team_rows
+                        else 0.0
+                    ),
                     "expected_finish": expected_finish,
                     **rank_probabilities,
                     "qualification_probability": (
@@ -621,11 +732,94 @@ def summarize_group_stage_results(
     )
 
 
+def validate_group_stage_summary(summary: pd.DataFrame) -> None:
+    """Validate rank and qualification probability contracts."""
+    rank_columns = [
+        "rank_1_probability",
+        "rank_2_probability",
+        "rank_3_probability",
+        "rank_4_probability",
+    ]
+    rank_totals = summary[rank_columns].sum(axis=1)
+    if not np.allclose(rank_totals, 1.0, atol=1e-9):
+        raise ValueError("Group rank probabilities must sum to one for every team")
+    qualification = (
+        summary["rank_1_probability"]
+        + summary["rank_2_probability"]
+        + summary["best_third_probability"]
+    )
+    if not np.allclose(summary["qualification_probability"], qualification, atol=1e-9):
+        raise ValueError("Qualification probability does not match rank components")
+
+
+def build_group_most_likely_tables(group_summary: pd.DataFrame) -> pd.DataFrame:
+    """Create projected group tables from group-stage simulation means."""
+    frame = group_summary.copy()
+    frame["rank"] = (
+        frame[
+            [
+                "rank_1_probability",
+                "rank_2_probability",
+                "rank_3_probability",
+                "rank_4_probability",
+            ]
+        ]
+        .to_numpy()
+        .argmax(axis=1)
+        + 1
+    )
+    output = frame.rename(
+        columns={
+            "expected_wins": "projected_wins",
+            "expected_draws": "projected_draws",
+            "expected_losses": "projected_losses",
+            "expected_points": "projected_points",
+            "expected_goals_for": "projected_goals_for",
+            "expected_goals_against": "projected_goals_against",
+            "expected_goal_difference": "projected_goal_difference",
+        }
+    )
+    columns = [
+        "group",
+        "rank",
+        "team",
+        "projected_wins",
+        "projected_draws",
+        "projected_losses",
+        "projected_points",
+        "projected_goals_for",
+        "projected_goals_against",
+        "projected_goal_difference",
+        "qualification_probability",
+        "best_third_probability",
+    ]
+    return output[columns].sort_values(
+        ["group", "rank", "projected_points", "projected_goal_difference"],
+        ascending=[True, True, False, False],
+    )
+
+
+def knockout_advancement_probability(
+    probabilities: dict[str, float], elo_a: float, elo_b: float
+) -> float:
+    """Convert A/D/B match probabilities into team A knockout advancement odds."""
+    elo_tiebreak = 1 / (1 + 10 ** ((elo_b - elo_a) / 400))
+    non_draw = probabilities["A"] + probabilities["B"]
+    regulation_share = probabilities["A"] / non_draw if non_draw else 0.5
+    return float(
+        np.clip(
+            probabilities["A"] + probabilities["D"] * (0.65 * elo_tiebreak + 0.35 * regulation_share),
+            0.02,
+            0.98,
+        )
+    )
+
+
 def decide_knockout_winner(
     team_a: str,
     team_b: str,
     stage: str,
-    model: VotingClassifier,
+    model: Any,
     label_encoder: LabelEncoder,
     context: PredictionContext,
     rng: np.random.Generator,
@@ -651,17 +845,13 @@ def decide_knockout_winner(
     )
     elo_a = context.team_features[team_a]["elo"]
     elo_b = context.team_features[team_b]["elo"]
-    if probabilities["D"] > 0.3:
-        chance_a = 1 / (1 + 10 ** ((elo_b - elo_a) / 400))
-    else:
-        non_draw = probabilities["A"] + probabilities["B"]
-        chance_a = probabilities["A"] / non_draw if non_draw else 0.5
+    chance_a = knockout_advancement_probability(probabilities, elo_a, elo_b)
     return team_a if rng.random() < chance_a else team_b
 
 
 def simulate_knockouts(
     qualifiers: list[str],
-    model: VotingClassifier,
+    model: Any,
     label_encoder: LabelEncoder,
     context: PredictionContext,
     rng: np.random.Generator,
@@ -704,7 +894,7 @@ def simulate_knockouts(
 
 
 def run_monte_carlo(
-    model: VotingClassifier,
+    model: Any,
     label_encoder: LabelEncoder,
     results: pd.DataFrame,
     elo: pd.DataFrame,
@@ -712,6 +902,8 @@ def run_monte_carlo(
     player_features: pd.DataFrame | None = None,
     use_player_features: bool = False,
     tournament_config: TournamentConfig | None = None,
+    seed: int = RANDOM_SEED,
+    scoreline_model: str = "poisson",
 ) -> tuple[
     pd.DataFrame,
     dict[str, Counter[str]],
@@ -730,12 +922,18 @@ def run_monte_carlo(
         player_features: Optional processed player-strength features.
         use_player_features: Whether to include player features in prediction rows.
         tournament_config: Optional tournament configuration.
+        seed: Random seed for reproducible simulations.
+        scoreline_model: Score sampler, either poisson or legacy.
 
     Returns:
         Aggregated results, round counters, prediction context, group-stage summary,
         and path counters.
     """
-    rng = np.random.default_rng(RANDOM_SEED)
+    if simulations <= 0:
+        raise ValueError("simulations must be positive")
+    if scoreline_model not in {"poisson", "legacy"}:
+        raise ValueError("scoreline_model must be 'poisson' or 'legacy'")
+    rng = np.random.default_rng(seed)
     context = build_prediction_context(
         results,
         elo,
@@ -758,12 +956,16 @@ def run_monte_carlo(
         "QF": Counter(),
     }
     path_counts: Counter[tuple[tuple[str, ...], ...]] = Counter()
-    path_stages = ("R32", "R16", "QF", "SF", "Final", "Champion")
     group_stage_rows: list[dict[str, Any]] = []
 
     for simulation in range(simulations):
         qualifiers, table_rows = simulate_group_stage(
-            model, label_encoder, context, rng, cache
+            model,
+            label_encoder,
+            context,
+            rng,
+            cache,
+            scoreline_model=scoreline_model,
         )
         group_stage_rows.extend(table_rows)
         champion, rounds = simulate_knockouts(
@@ -772,7 +974,7 @@ def run_monte_carlo(
         for stage in ("R32", "R16", "QF", "SF", "Final"):
             round_counts[stage].update(rounds[stage])
         round_counts["Champion"].update([champion])
-        path_counts.update([tuple(tuple(rounds[stage]) for stage in path_stages)])
+        path_counts.update([tuple(tuple(rounds[stage]) for stage in ROUND_STAGES)])
         if (simulation + 1) % max(simulations // 5, 1) == 0:
             print(f"Monte Carlo progress: {simulation + 1}/{simulations}")
 
@@ -782,9 +984,12 @@ def run_monte_carlo(
             {
                 "team": team,
                 "confederation": CONFEDERATIONS.get(team, "Other"),
-                "win_probability": round_counts["Champion"][team] / simulations,
-                "final_probability": round_counts["Final"][team] / simulations,
+                "r32_probability": round_counts["R32"][team] / simulations,
+                "r16_probability": round_counts["R16"][team] / simulations,
+                "qf_probability": round_counts["QF"][team] / simulations,
                 "sf_probability": round_counts["SF"][team] / simulations,
+                "final_probability": round_counts["Final"][team] / simulations,
+                "win_probability": round_counts["Champion"][team] / simulations,
             }
         )
     summary = pd.DataFrame(rows).sort_values("win_probability", ascending=False)
@@ -793,6 +998,8 @@ def run_monte_carlo(
         simulations,
         context.tournament_config,
     )
+    validate_group_stage_summary(group_stage_summary)
+    validate_round_counts(round_counts, simulations)
     return (
         summary.reset_index(drop=True),
         round_counts,
@@ -811,6 +1018,92 @@ def save_simulation_results(summary: pd.DataFrame, output_path: Path) -> None:
     """
     output_path.parent.mkdir(parents=True, exist_ok=True)
     summary.to_csv(output_path, index=False)
+
+
+def validate_round_counts(round_counts: dict[str, Counter[str]], simulations: int) -> None:
+    """Validate expected total entrants per knockout round."""
+    expected = {"R32": 32, "R16": 16, "QF": 8, "SF": 4, "Final": 2, "Champion": 1}
+    for stage, entrants in expected.items():
+        total = sum(round_counts[stage].values())
+        if total != entrants * simulations:
+            raise ValueError(
+                f"{stage} has {total} counted entrants, expected {entrants * simulations}"
+            )
+
+
+def round_counts_to_jsonable(round_counts: dict[str, Counter[str]]) -> dict[str, dict[str, int]]:
+    """Convert round counters into JSON-serializable dictionaries."""
+    return {
+        stage: {team: int(count) for team, count in counter.items()}
+        for stage, counter in round_counts.items()
+    }
+
+
+def round_counts_from_jsonable(payload: dict[str, dict[str, int]]) -> dict[str, Counter[str]]:
+    """Convert saved round-count JSON back into counters."""
+    return {stage: Counter(values) for stage, values in payload.items()}
+
+
+def path_counts_to_jsonable(
+    path_counts: Counter[tuple[tuple[str, ...], ...]]
+) -> list[dict[str, Any]]:
+    """Convert path counters into JSON-serializable rows."""
+    rows = []
+    for path, count in path_counts.items():
+        rows.append(
+            {
+                "count": int(count),
+                "path": {
+                    stage: list(teams)
+                    for stage, teams in zip(ROUND_STAGES, path, strict=True)
+                },
+            }
+        )
+    return rows
+
+
+def path_counts_from_jsonable(
+    payload: list[dict[str, Any]]
+) -> Counter[tuple[tuple[str, ...], ...]]:
+    """Convert saved path-count rows back into a counter."""
+    counter: Counter[tuple[tuple[str, ...], ...]] = Counter()
+    for row in payload:
+        stage_map = row["path"]
+        path = tuple(tuple(stage_map[stage]) for stage in ROUND_STAGES)
+        counter[path] = int(row["count"])
+    return counter
+
+
+def save_round_counts(round_counts: dict[str, Counter[str]], output_path: Path) -> None:
+    """Save round counters to JSON."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w", encoding="utf-8") as handle:
+        json.dump(round_counts_to_jsonable(round_counts), handle, indent=2)
+
+
+def load_round_counts(input_path: Path) -> dict[str, Counter[str]]:
+    """Load round counters from JSON."""
+    if not input_path.exists():
+        raise FileNotFoundError(f"Missing required artifact: {input_path}")
+    with input_path.open("r", encoding="utf-8") as handle:
+        return round_counts_from_jsonable(json.load(handle))
+
+
+def save_path_counts(
+    path_counts: Counter[tuple[tuple[str, ...], ...]], output_path: Path
+) -> None:
+    """Save bracket path counters to JSON."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w", encoding="utf-8") as handle:
+        json.dump(path_counts_to_jsonable(path_counts), handle, indent=2)
+
+
+def load_path_counts(input_path: Path) -> Counter[tuple[tuple[str, ...], ...]]:
+    """Load bracket path counters from JSON."""
+    if not input_path.exists():
+        raise FileNotFoundError(f"Missing required artifact: {input_path}")
+    with input_path.open("r", encoding="utf-8") as handle:
+        return path_counts_from_jsonable(json.load(handle))
 
 
 def plot_heatmap_win_probabilities(
@@ -909,7 +1202,9 @@ def plot_radar_team_strengths(context: PredictionContext, output_path: Path) -> 
     plt.close(fig)
 
 
-def plot_monte_carlo_winners(summary: pd.DataFrame, output_path: Path) -> None:
+def plot_monte_carlo_winners(
+    summary: pd.DataFrame, output_path: Path, simulations: int | None = None
+) -> None:
     """Plot top 16 tournament win probabilities.
 
     Args:
@@ -924,7 +1219,13 @@ def plot_monte_carlo_winners(summary: pd.DataFrame, output_path: Path) -> None:
     plt.style.use("dark_background")
     fig, ax = plt.subplots(figsize=(12, 8))
     bars = ax.barh(top["team"], top["win_probability"] * 100, color=colors)
-    ax.set_title("Monte Carlo Tournament Winners - FIFA WC 2026", fontsize=18)
+    note = ""
+    if simulations:
+        max_se = np.sqrt(
+            top["win_probability"] * (1 - top["win_probability"]) / simulations
+        ).max()
+        note = f"\nMonte Carlo SE up to +/- {max_se * 100:.2f} pp"
+    ax.set_title(f"Monte Carlo Tournament Winners - FIFA WC 2026{note}", fontsize=18)
     ax.set_xlabel("Win probability (%)")
     ax.grid(axis="x", alpha=0.2)
     for bar, value in zip(bars, top["win_probability"] * 100, strict=True):
@@ -1132,6 +1433,142 @@ def build_bracket_probability_slots(
     return bracket_slots
 
 
+def bracket_probability_slots_frame(
+    path_counts: Counter[tuple[tuple[str, ...], ...]],
+    round_counts: dict[str, Counter[str]],
+    simulations: int,
+    config: TournamentConfig,
+) -> pd.DataFrame:
+    """Return bracket slot probabilities as a flat dataframe."""
+    slots = build_bracket_probability_slots(path_counts, round_counts, simulations, config)
+    rows = []
+    for stage, stage_slots in slots.items():
+        for slot in stage_slots:
+            rows.append({"round": stage, **slot})
+    return pd.DataFrame(rows)
+
+
+def save_bracket_slot_probabilities(
+    path_counts: Counter[tuple[tuple[str, ...], ...]],
+    round_counts: dict[str, Counter[str]],
+    simulations: int,
+    config: TournamentConfig,
+    output_path: Path,
+) -> pd.DataFrame:
+    """Save bracket slot probabilities to CSV."""
+    frame = bracket_probability_slots_frame(
+        path_counts,
+        round_counts,
+        simulations,
+        config,
+    )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    frame.to_csv(output_path, index=False)
+    return frame
+
+
+def plot_team_odds_table(
+    summary: pd.DataFrame,
+    output_path: Path,
+    simulations: int | None = None,
+) -> None:
+    """Render each team's round probabilities as a table-style heatmap."""
+    columns = [
+        "r32_probability",
+        "r16_probability",
+        "qf_probability",
+        "sf_probability",
+        "final_probability",
+        "win_probability",
+    ]
+    labels = ["R32", "R16", "QF", "SF", "Final", "Win"]
+    data = summary.sort_values("win_probability", ascending=False).reset_index(drop=True)
+    values = data[columns].to_numpy() * 100
+    annotations = np.vectorize(lambda value: f"{value:.1f}%")(values)
+    wrapped_teams = ["\n".join(textwrap.wrap(team, width=18)) for team in data["team"]]
+    height = max(12, len(data) * 0.28)
+    plt.style.use("dark_background")
+    fig, ax = plt.subplots(figsize=(10, height))
+    sns.heatmap(
+        values,
+        annot=annotations,
+        fmt="",
+        cmap="Greens",
+        xticklabels=labels,
+        yticklabels=wrapped_teams,
+        cbar_kws={"label": "Probability (%)"},
+        ax=ax,
+    )
+    note = ""
+    if simulations:
+        max_se = np.sqrt(data["win_probability"] * (1 - data["win_probability"]) / simulations).max()
+        note = f"\nWin-probability Monte Carlo SE up to +/- {max_se * 100:.2f} pp"
+    ax.set_title(f"World Cup 2026 Team Round Odds{note}")
+    ax.set_xlabel("")
+    ax.set_ylabel("")
+    ax.tick_params(axis="y", labelsize=7)
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=150)
+    plt.close(fig)
+
+
+def plot_group_most_likely_tables(
+    table: pd.DataFrame,
+    output_path: Path,
+) -> None:
+    """Render projected group tables."""
+    groups = sorted(table["group"].unique())
+    plt.style.use("dark_background")
+    fig, axes = plt.subplots(4, 3, figsize=(20, 22))
+    fig.patch.set_facecolor("#050505")
+    for ax, group in zip(axes.flat, groups, strict=True):
+        group_data = table[table["group"] == group].sort_values("rank")
+        ax.axis("off")
+        ax.set_title(f"Group {group}", color=ACCENT, fontsize=14, weight="bold")
+        display = group_data[
+            [
+                "rank",
+                "team",
+                "projected_wins",
+                "projected_draws",
+                "projected_losses",
+                "projected_points",
+                "projected_goal_difference",
+                "qualification_probability",
+            ]
+        ].copy()
+        display["team"] = display["team"].map(lambda value: "\n".join(textwrap.wrap(value, 16)))
+        for column in [
+            "projected_wins",
+            "projected_draws",
+            "projected_losses",
+            "projected_points",
+            "projected_goal_difference",
+        ]:
+            display[column] = display[column].map(lambda value: f"{value:.1f}")
+        display["qualification_probability"] = display["qualification_probability"].map(
+            lambda value: f"{value * 100:.0f}%"
+        )
+        display.columns = ["Rk", "Team", "W", "D", "L", "Pts", "GD", "Qual"]
+        table_artist = ax.table(
+            cellText=display.values,
+            colLabels=display.columns,
+            loc="center",
+            cellLoc="center",
+        )
+        table_artist.auto_set_font_size(False)
+        table_artist.set_fontsize(8)
+        table_artist.scale(1, 1.4)
+        for cell in table_artist.get_celld().values():
+            cell.set_edgecolor("#333333")
+            cell.set_facecolor("#111111")
+            cell.get_text().set_color(WHITE)
+    fig.suptitle("Most Likely Group Tables - FIFA WC 2026", color=WHITE, fontsize=20)
+    fig.tight_layout(rect=(0, 0, 1, 0.98))
+    fig.savefig(output_path, dpi=150)
+    plt.close(fig)
+
+
 def plot_bracket_simulation(
     summary: pd.DataFrame,
     round_counts: dict[str, Counter[str]],
@@ -1247,7 +1684,7 @@ def plot_bracket_simulation(
 
 
 def generate_visualizations(
-    model: VotingClassifier,
+    model: Any,
     label_encoder: LabelEncoder,
     summary: pd.DataFrame,
     round_counts: dict[str, Counter[str]],
@@ -1290,4 +1727,17 @@ def generate_visualizations(
         group_stage_summary,
         visualizations_dir / "group_stage_predictions.png",
     )
-    plot_monte_carlo_winners(summary, visualizations_dir / "monte_carlo_winners.png")
+    plot_monte_carlo_winners(
+        summary,
+        visualizations_dir / "monte_carlo_winners.png",
+        simulations=simulations,
+    )
+    plot_team_odds_table(
+        summary,
+        visualizations_dir / "team_odds_table.png",
+        simulations=simulations,
+    )
+    plot_group_most_likely_tables(
+        build_group_most_likely_tables(group_stage_summary),
+        visualizations_dir / "group_most_likely_tables.png",
+    )

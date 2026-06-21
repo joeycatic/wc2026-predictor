@@ -20,8 +20,11 @@ The pipeline is designed to run from a fresh clone with one command after depend
 - ELO-based strength features and head-to-head history.
 - Optional Kaggle/Sofifa player-rating aggregates joined by latest snapshot before match year.
 - Soft-voting ensemble with Gradient Boosting, Random Forest, and MLP classifiers.
-- Chronological 80/20 train/test split, `TimeSeriesSplit` validation, log loss, Brier score, and calibration metrics.
+- Chronological train/calibration/test evaluation, `TimeSeriesSplit` validation, log loss, Brier score, ECE, and before/after calibration metrics.
 - 10,000-run Monte Carlo tournament simulation by default.
+- Seeded simulations, cached-model runs, and visualization-only replay from saved CSV/JSON artifacts.
+- Poisson scoreline simulation with legacy scoreline sampling still available.
+- World Cup-only historical backtesting plus team/confederation error diagnostics.
 - Config-backed 2026 groups and bracket slots in `data/config/wc2026_groups.yml`.
 - High-resolution dark-theme visualizations for GitHub and reports.
 
@@ -41,6 +44,16 @@ python scripts/download_data.py --datasets all
 python main.py --simulations 10000 --use-player-features
 ```
 
+Other common modes:
+
+```bash
+python main.py --simulations 10000 --skip-player-features --seed 42
+python main.py --no-train --simulations 10000
+python main.py --visualize-only
+python main.py --data-status
+python main.py --scoreline-model legacy
+```
+
 ## Dataset Setup
 
 Place raw CSVs in `data/raw/`. The loader supports both the prompt names and the current repository layout:
@@ -49,6 +62,12 @@ Place raw CSVs in `data/raw/`. The loader supports both the prompt names and the
 - `data/raw/elo_ratings.csv` or `data/raw/eloratings.csv`
 
 Expected match columns are `date`, `home_team`, `away_team`, `home_score`, `away_score`, `tournament`, and optionally `stage`. Expected ELO columns are `date`, `team`, and `elo_rating`; a `rating` column is automatically renamed.
+
+Optional local prior inputs are also supported. If absent, the pipeline records missing-source notes and continues unchanged:
+
+- `data/raw/fifa_rankings.csv`: `date`, `team`, `rank`, optional `points`
+- `data/raw/betting_odds.csv`: `date`, `team`, one or more of `win_odds`, `implied_win_probability`, optional `market`
+- `data/raw/wc2026_fixtures.csv`: `date`, `stage`, `home_team`, `away_team`, optional `venue`, `city`, `country`
 
 ### Kaggle Setup
 
@@ -98,6 +117,8 @@ wc2026-predictor/
 │   ├── player_features.py
 │   ├── tournament.py
 │   ├── model.py
+│   ├── optional_data.py
+│   ├── backtest.py
 │   └── simulate.py
 ├── notebooks/
 │   └── 01_exploration_and_results.ipynb
@@ -116,7 +137,7 @@ The model is a soft-voting classifier:
 - `RandomForestClassifier(n_estimators=200, max_depth=5)`
 - `MLPClassifier(hidden_layer_sizes=(64, 32), max_iter=500)`
 
-Target classes are `A` for team A win, `D` for draw, and `B` for team B win. Training uses a chronological 80/20 split to respect time order.
+Target classes are `A` for team A win, `D` for draw, and `B` for team B win. Training uses chronological splits to respect time order, calibrates the fitted model on a held-out calibration window, and reports before/after calibration quality in `outputs/metrics.json`.
 
 ## Results
 
@@ -132,6 +153,13 @@ After running `python main.py`, results are written to `outputs/`.
 | Trained ensemble | `outputs/ensemble_model.pkl` |
 | Label encoder | `outputs/label_encoder.pkl` |
 | Simulation summary | `outputs/simulation_results.csv` |
+| Group-stage summary | `outputs/group_stage_predictions.csv` |
+| Group most-likely tables | `outputs/group_most_likely_tables.csv` |
+| Bracket slot probabilities | `outputs/bracket_slot_probabilities.csv` |
+| Round counts | `outputs/round_counts.json` |
+| Path counts | `outputs/path_counts.json` |
+| Historical backtest | `outputs/backtest_results.csv` |
+| Error diagnostics | `outputs/error_analysis.csv` |
 
 ## Visualizations
 
@@ -144,6 +172,8 @@ After running `python main.py`, results are written to `outputs/`.
 ![Team Strength Radars](visualizations/radar_team_strengths.png)
 
 ![Tournament Bracket](visualizations/bracket_simulation.png)
+
+Additional generated plots include `visualizations/team_odds_table.png`, `visualizations/group_most_likely_tables.png`, `visualizations/calibration_curves.png`, `visualizations/backtest_summary.png`, and `visualizations/error_analysis.png`.
 
 ## Contributing
 
