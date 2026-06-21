@@ -465,6 +465,7 @@ def simulate_group_stage(
     third_place: list[dict[str, Any]] = []
     table_rows: list[dict[str, Any]] = []
     group_rankings: dict[str, list[str]] = {}
+    ranked_groups: dict[str, list[dict[str, Any]]] = {}
 
     for group, teams in context.tournament_config.groups.items():
         table = {
@@ -507,8 +508,8 @@ def simulate_group_stage(
         for rank, row in enumerate(ranked, start=1):
             row["rank"] = rank
             row["gd"] = row["gf"] - row["ga"]
-            table_rows.append(row.copy())
         group_rankings[group] = [row["team"] for row in ranked]
+        ranked_groups[group] = ranked
         third_place.append(ranked[2])
 
     best_third = sorted(
@@ -522,10 +523,102 @@ def simulate_group_stage(
         reverse=True,
     )[:8]
     best_third_teams = [row["team"] for row in best_third]
+    best_third_set = set(best_third_teams)
+    for group, ranked in ranked_groups.items():
+        for row in ranked:
+            qualified = row["rank"] <= 2 or row["team"] in best_third_set
+            table_rows.append(
+                {
+                    **row,
+                    "group": group,
+                    "qualified": qualified,
+                    "best_third_qualified": row["rank"] == 3
+                    and row["team"] in best_third_set,
+                }
+            )
     knockout_field = build_knockout_field(
         context.tournament_config, group_rankings, best_third_teams
     )
     return knockout_field, table_rows
+
+
+def summarize_group_stage_results(
+    table_rows: list[dict[str, Any]],
+    simulations: int,
+    config: TournamentConfig,
+) -> pd.DataFrame:
+    """Convert per-simulation group tables into team-level probabilities.
+
+    Args:
+        table_rows: Group table rows from every simulation.
+        simulations: Number of tournament runs.
+        config: Tournament configuration.
+
+    Returns:
+        One row per team with expected table stats and rank/qualification chances.
+    """
+    if simulations <= 0:
+        raise ValueError("simulations must be positive")
+
+    frame = pd.DataFrame(table_rows)
+    rows: list[dict[str, Any]] = []
+    for group, teams in config.groups.items():
+        for team in teams:
+            team_rows = frame[frame["team"] == team] if not frame.empty else frame
+            rank_probabilities = {
+                f"rank_{rank}_probability": (
+                    float((team_rows["rank"] == rank).sum() / simulations)
+                    if not team_rows.empty
+                    else 0.0
+                )
+                for rank in range(1, 5)
+            }
+            expected_finish = sum(
+                rank * rank_probabilities[f"rank_{rank}_probability"]
+                for rank in range(1, 5)
+            )
+            rows.append(
+                {
+                    "group": group,
+                    "team": team,
+                    "expected_points": (
+                        float(team_rows["points"].sum() / simulations)
+                        if not team_rows.empty
+                        else 0.0
+                    ),
+                    "expected_goal_difference": (
+                        float(team_rows["gd"].sum() / simulations)
+                        if not team_rows.empty
+                        else 0.0
+                    ),
+                    "expected_goals_for": (
+                        float(team_rows["gf"].sum() / simulations)
+                        if not team_rows.empty
+                        else 0.0
+                    ),
+                    "expected_finish": expected_finish,
+                    **rank_probabilities,
+                    "qualification_probability": (
+                        float(team_rows["qualified"].sum() / simulations)
+                        if not team_rows.empty
+                        else 0.0
+                    ),
+                    "best_third_probability": (
+                        float(team_rows["best_third_qualified"].sum() / simulations)
+                        if not team_rows.empty
+                        else 0.0
+                    ),
+                }
+            )
+
+    return (
+        pd.DataFrame(rows)
+        .sort_values(
+            ["group", "expected_finish", "expected_points", "expected_goal_difference"],
+            ascending=[True, True, False, False],
+        )
+        .reset_index(drop=True)
+    )
 
 
 def decide_knockout_winner(
@@ -623,6 +716,7 @@ def run_monte_carlo(
     pd.DataFrame,
     dict[str, Counter[str]],
     PredictionContext,
+    pd.DataFrame,
     Counter[tuple[tuple[str, ...], ...]],
 ]:
     """Run full-tournament Monte Carlo simulations.
@@ -638,7 +732,8 @@ def run_monte_carlo(
         tournament_config: Optional tournament configuration.
 
     Returns:
-        Aggregated results, round counters, prediction context, and path counters.
+        Aggregated results, round counters, prediction context, group-stage summary,
+        and path counters.
     """
     rng = np.random.default_rng(RANDOM_SEED)
     context = build_prediction_context(
@@ -664,9 +759,13 @@ def run_monte_carlo(
     }
     path_counts: Counter[tuple[tuple[str, ...], ...]] = Counter()
     path_stages = ("R32", "R16", "QF", "SF", "Final", "Champion")
+    group_stage_rows: list[dict[str, Any]] = []
 
     for simulation in range(simulations):
-        qualifiers, _ = simulate_group_stage(model, label_encoder, context, rng, cache)
+        qualifiers, table_rows = simulate_group_stage(
+            model, label_encoder, context, rng, cache
+        )
+        group_stage_rows.extend(table_rows)
         champion, rounds = simulate_knockouts(
             qualifiers, model, label_encoder, context, rng, cache
         )
@@ -689,7 +788,18 @@ def run_monte_carlo(
             }
         )
     summary = pd.DataFrame(rows).sort_values("win_probability", ascending=False)
-    return summary.reset_index(drop=True), round_counts, context, path_counts
+    group_stage_summary = summarize_group_stage_results(
+        group_stage_rows,
+        simulations,
+        context.tournament_config,
+    )
+    return (
+        summary.reset_index(drop=True),
+        round_counts,
+        context,
+        group_stage_summary,
+        path_counts,
+    )
 
 
 def save_simulation_results(summary: pd.DataFrame, output_path: Path) -> None:
@@ -831,14 +941,206 @@ def plot_monte_carlo_winners(summary: pd.DataFrame, output_path: Path) -> None:
     plt.close(fig)
 
 
+def plot_group_stage_predictions(
+    group_summary: pd.DataFrame,
+    output_path: Path,
+) -> None:
+    """Plot group-stage rank and qualification probabilities.
+
+    Args:
+        group_summary: Team-level group-stage probability summary.
+        output_path: Output PNG path.
+    """
+    rank_columns = [
+        "rank_1_probability",
+        "rank_2_probability",
+        "rank_3_probability",
+        "rank_4_probability",
+    ]
+    rank_colors = ["#00FF87", "#2DD4BF", "#FACC15", "#EF4444"]
+    groups = sorted(group_summary["group"].unique())
+
+    plt.style.use("dark_background")
+    fig, axes = plt.subplots(4, 3, figsize=(22, 24), sharex=True)
+    fig.patch.set_facecolor("#050505")
+    for ax, group in zip(axes.flat, groups, strict=True):
+        group_data = group_summary[group_summary["group"] == group].sort_values(
+            ["expected_finish", "expected_points", "expected_goal_difference"],
+            ascending=[True, False, False],
+        )
+        ax.set_facecolor("#050505")
+        ax.set_xlim(-0.58, 1.34)
+        ax.set_ylim(-0.65, len(group_data) - 0.15)
+        ax.axis("off")
+        ax.set_title(f"Group {group}", color=ACCENT, fontsize=15, weight="bold", pad=10)
+        ax.text(-0.56, len(group_data) - 0.35, "Team", fontsize=8, color="#BBBBBB")
+        ax.text(
+            0.00,
+            len(group_data) - 0.35,
+            "Finish probabilities",
+            fontsize=8,
+            color="#BBBBBB",
+        )
+        ax.text(1.03, len(group_data) - 0.35, "Qual", fontsize=8, color="#BBBBBB")
+        ax.text(1.18, len(group_data) - 0.35, "Pts", fontsize=8, color="#BBBBBB")
+        ax.text(1.28, len(group_data) - 0.35, "GD", fontsize=8, color="#BBBBBB")
+
+        for row_index, row in enumerate(group_data.itertuples(index=False)):
+            y_pos = len(group_data) - row_index - 1
+            ax.text(
+                -0.56,
+                y_pos,
+                row.team,
+                ha="left",
+                va="center",
+                fontsize=9,
+                color=WHITE,
+                weight="bold" if row_index < 2 else "normal",
+            )
+            left = 0.0
+            for rank_index, column in enumerate(rank_columns, start=1):
+                probability = float(getattr(row, column))
+                ax.barh(
+                    y_pos,
+                    probability,
+                    left=left,
+                    height=0.40,
+                    color=rank_colors[rank_index - 1],
+                    alpha=0.92,
+                )
+                if probability >= 0.13:
+                    ax.text(
+                        left + probability / 2,
+                        y_pos,
+                        f"{probability * 100:.0f}",
+                        ha="center",
+                        va="center",
+                        fontsize=7,
+                        color="#050505",
+                        weight="bold",
+                    )
+                left += probability
+            ax.barh(
+                y_pos - 0.30,
+                row.qualification_probability,
+                left=0,
+                height=0.08,
+                color=ACCENT,
+                alpha=0.95,
+            )
+            ax.text(
+                1.03,
+                y_pos,
+                f"{row.qualification_probability * 100:.0f}%",
+                ha="left",
+                va="center",
+                fontsize=8,
+                color=ACCENT,
+                weight="bold",
+            )
+            ax.text(
+                1.18,
+                y_pos,
+                f"{row.expected_points:.1f}",
+                ha="left",
+                va="center",
+                fontsize=8,
+                color=WHITE,
+            )
+            ax.text(
+                1.28,
+                y_pos,
+                f"{row.expected_goal_difference:+.1f}",
+                ha="left",
+                va="center",
+                fontsize=8,
+                color=WHITE,
+            )
+
+        legend_x = [0.00, 0.18, 0.36, 0.54]
+        for label, color, x_pos in zip(
+            ["1st", "2nd", "3rd", "4th"], rank_colors, legend_x, strict=True
+        ):
+            ax.scatter(x_pos, -0.45, s=28, color=color)
+            ax.text(
+                x_pos + 0.025, -0.45, label, va="center", fontsize=7, color="#CCCCCC"
+            )
+
+    fig.suptitle(
+        "World Cup 2026 Group-Stage Prediction Probabilities",
+        fontsize=22,
+        color=WHITE,
+        weight="bold",
+        y=0.995,
+    )
+    fig.tight_layout(rect=(0, 0, 1, 0.98))
+    fig.savefig(output_path, dpi=150)
+    plt.close(fig)
+
+
+def build_bracket_probability_slots(
+    path_counts: Counter[tuple[tuple[str, ...], ...]],
+    round_counts: dict[str, Counter[str]],
+    simulations: int,
+    config: TournamentConfig,
+) -> dict[str, list[dict[str, Any]]]:
+    """Aggregate most likely teams by bracket position for each knockout round."""
+    if simulations <= 0:
+        raise ValueError("simulations must be positive")
+
+    stages = ["R32", "R16", "QF", "SF", "Final", "Champion"]
+    stage_sizes = {"R32": 32, "R16": 16, "QF": 8, "SF": 4, "Final": 2, "Champion": 1}
+    position_counts = {
+        stage: [Counter() for _ in range(stage_sizes[stage])] for stage in stages
+    }
+
+    for path, count in path_counts.items():
+        for stage, teams in zip(stages, path, strict=False):
+            for slot_index, team in enumerate(teams[: stage_sizes[stage]]):
+                position_counts[stage][slot_index][team] += count
+
+    if not path_counts:
+        for stage in stages:
+            for slot_index, (team, count) in enumerate(
+                round_counts[stage].most_common(stage_sizes[stage])
+            ):
+                position_counts[stage][slot_index][team] += count
+
+    bracket_slots: dict[str, list[dict[str, Any]]] = {}
+    for stage in stages:
+        rows = []
+        for slot_index, counter in enumerate(position_counts[stage]):
+            if counter:
+                team, count = counter.most_common(1)[0]
+            else:
+                team, count = "TBD", 0
+            rows.append(
+                {
+                    "slot_index": slot_index,
+                    "slot_label": (
+                        config.bracket_order[slot_index]
+                        if stage == "R32"
+                        else f"{stage} {slot_index + 1}"
+                    ),
+                    "team": team,
+                    "probability": count / simulations,
+                    "count": count,
+                }
+            )
+        bracket_slots[stage] = rows
+
+    return bracket_slots
+
+
 def plot_bracket_simulation(
     summary: pd.DataFrame,
     round_counts: dict[str, Counter[str]],
     path_counts: Counter[tuple[tuple[str, ...], ...]],
     simulations: int,
     output_path: Path,
+    config: TournamentConfig,
 ) -> None:
-    """Draw a compact bracket-style summary from most frequent advancers.
+    """Draw a probability bracket from most likely teams at each slot.
 
     Args:
         summary: Simulation summary dataframe.
@@ -846,50 +1148,59 @@ def plot_bracket_simulation(
         path_counts: Complete simulated round paths.
         simulations: Number of tournament runs.
         output_path: Output PNG path.
+        config: Tournament configuration with official-style bracket slots.
     """
     stages = ["R32", "R16", "QF", "SF", "Final", "Champion"]
     stage_sizes = {"R32": 32, "R16": 16, "QF": 8, "SF": 4, "Final": 2, "Champion": 1}
-    if path_counts:
-        path, _ = path_counts.most_common(1)[0]
-        stage_teams = {
-            stage: list(teams) for stage, teams in zip(stages, path, strict=True)
-        }
-    else:
-        stage_teams = {
-            stage: [
-                team for team, _ in round_counts[stage].most_common(stage_sizes[stage])
-            ]
-            for stage in stages
-        }
+    stage_labels = {
+        "R32": "Round of 32",
+        "R16": "Round of 16",
+        "QF": "Quarterfinals",
+        "SF": "Semifinals",
+        "Final": "Final",
+        "Champion": "Champion",
+    }
+    bracket_slots = build_bracket_probability_slots(
+        path_counts,
+        round_counts,
+        simulations,
+        config,
+    )
 
     plt.style.use("dark_background")
-    fig, ax = plt.subplots(figsize=(18, 10))
+    fig, ax = plt.subplots(figsize=(24, 18))
+    fig.patch.set_facecolor("#050505")
+    ax.set_facecolor("#050505")
     ax.axis("off")
-    x_positions = np.linspace(0.05, 0.95, len(stages))
+    ax.set_ylim(-0.02, 1.06)
+    x_positions = np.array([0.06, 0.26, 0.44, 0.61, 0.77, 0.92])
     for stage_index, stage in enumerate(stages):
-        teams = stage_teams[stage]
-        y_positions = np.linspace(0.05, 0.95, len(teams)) if len(teams) > 1 else [0.5]
-        for team, y_pos in zip(teams, y_positions, strict=True):
-            probability = round_counts[stage][team] / simulations * 100
+        slots = bracket_slots[stage]
+        y_positions = (
+            np.linspace(0.02, 0.93, len(slots))[::-1] if len(slots) > 1 else [0.48]
+        )
+        for slot, y_pos in zip(slots, y_positions, strict=True):
+            probability = slot["probability"] * 100
+            label_prefix = f"{slot['slot_label']}  " if stage == "R32" else ""
             ax.text(
                 x_positions[stage_index],
                 y_pos,
-                f"{team}\n{probability:.1f}%",
+                f"{label_prefix}{slot['team']}\n{probability:.1f}% reach",
                 ha="center",
                 va="center",
-                fontsize=8 if stage != "Champion" else 13,
+                fontsize=6.5 if stage in {"R32", "R16"} else 9,
                 color=WHITE,
                 bbox={
                     "boxstyle": "round,pad=0.25",
                     "facecolor": "#111111",
-                    "edgecolor": ACCENT,
+                    "edgecolor": ACCENT if stage == "Champion" else "#666666",
                     "linewidth": 0.8,
                 },
             )
         ax.text(
             x_positions[stage_index],
-            1.02,
-            stage,
+            0.985,
+            stage_labels[stage],
             ha="center",
             va="bottom",
             fontsize=12,
@@ -898,14 +1209,14 @@ def plot_bracket_simulation(
         )
 
     for left_index in range(len(stages) - 1):
-        left_ys = np.linspace(0.05, 0.95, stage_sizes[stages[left_index]])
-        right_ys = np.linspace(0.05, 0.95, stage_sizes[stages[left_index + 1]])
+        left_ys = np.linspace(0.02, 0.93, stage_sizes[stages[left_index]])[::-1]
+        right_ys = np.linspace(0.02, 0.93, stage_sizes[stages[left_index + 1]])[::-1]
         for pair_index, right_y in enumerate(right_ys):
             source = left_ys[pair_index * 2 : pair_index * 2 + 2]
             for left_y in source:
                 path = MplPath(
                     [
-                        (x_positions[left_index] + 0.035, left_y),
+                        (x_positions[left_index] + 0.045, left_y),
                         (
                             (x_positions[left_index] + x_positions[left_index + 1]) / 2,
                             left_y,
@@ -914,23 +1225,23 @@ def plot_bracket_simulation(
                             (x_positions[left_index] + x_positions[left_index + 1]) / 2,
                             right_y,
                         ),
-                        (x_positions[left_index + 1] - 0.035, right_y),
+                        (x_positions[left_index + 1] - 0.045, right_y),
                     ],
                     [MplPath.MOVETO, MplPath.LINETO, MplPath.LINETO, MplPath.LINETO],
                 )
                 ax.add_patch(
-                    PathPatch(path, edgecolor="#555555", facecolor="none", lw=0.7)
+                    PathPatch(path, edgecolor="#444444", facecolor="none", lw=0.65)
                 )
 
     champion = summary.iloc[0]
-    ax.set_title(
-        f"Most Likely Tournament Path - Champion: {champion['team']}"
+    fig.suptitle(
+        f"World Cup 2026 Probability Bracket - Most Likely Champion: {champion['team']}"
         f" ({champion['win_probability'] * 100:.2f}%)",
-        fontsize=18,
+        fontsize=20,
         color=WHITE,
-        pad=20,
+        y=0.995,
     )
-    fig.tight_layout()
+    fig.tight_layout(rect=(0, 0, 1, 0.965))
     fig.savefig(output_path, dpi=150)
     plt.close(fig)
 
@@ -941,6 +1252,7 @@ def generate_visualizations(
     summary: pd.DataFrame,
     round_counts: dict[str, Counter[str]],
     context: PredictionContext,
+    group_stage_summary: pd.DataFrame,
     visualizations_dir: Path,
     simulations: int,
     path_counts: Counter[tuple[tuple[str, ...], ...]] | None = None,
@@ -953,6 +1265,7 @@ def generate_visualizations(
         summary: Simulation summary dataframe.
         round_counts: Monte Carlo round counters.
         context: PredictionContext.
+        group_stage_summary: Group-stage probability summary dataframe.
         visualizations_dir: Output directory.
         simulations: Number of tournament runs.
         path_counts: Complete simulated path counters.
@@ -971,5 +1284,10 @@ def generate_visualizations(
         path_counts or Counter(),
         simulations,
         visualizations_dir / "bracket_simulation.png",
+        context.tournament_config,
+    )
+    plot_group_stage_predictions(
+        group_stage_summary,
+        visualizations_dir / "group_stage_predictions.png",
     )
     plot_monte_carlo_winners(summary, visualizations_dir / "monte_carlo_winners.png")

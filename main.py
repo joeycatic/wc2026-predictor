@@ -89,7 +89,7 @@ def main() -> None:
     )
 
     print(f"4/5 Running {args.simulations:,} Monte Carlo simulations...")
-    summary, round_counts, context, path_counts = run_monte_carlo(
+    summary, round_counts, context, group_stage_summary, path_counts = run_monte_carlo(
         model,
         label_encoder,
         results,
@@ -100,6 +100,10 @@ def main() -> None:
         tournament_config=tournament_config,
     )
     save_simulation_results(summary, outputs_dir / "simulation_results.csv")
+    save_simulation_results(
+        group_stage_summary,
+        outputs_dir / "group_stage_predictions.csv",
+    )
 
     print("Top 10 predicted finalists:")
     finalist_view = summary.sort_values("final_probability", ascending=False).head(10)
@@ -113,6 +117,7 @@ def main() -> None:
         summary,
         round_counts,
         context,
+        group_stage_summary,
         visualizations_dir,
         simulations=args.simulations,
         path_counts=path_counts,

@@ -1,49 +1,49 @@
 team,confederation,win_probability,final_probability,sf_probability
-Spain,UEFA,0.3,0.3,0.4
-Brazil,CONMEBOL,0.1,0.1,0.2
-Panama,CONCACAF,0.1,0.1,0.1
-Algeria,CAF,0.1,0.1,0.1
-Uruguay,CONMEBOL,0.1,0.1,0.2
-Cape Verde,CAF,0.1,0.1,0.1
-Ecuador,CONMEBOL,0.1,0.1,0.1
-Portugal,UEFA,0.1,0.1,0.2
-Bosnia and Herzegovina,UEFA,0.0,0.0,0.0
-Mexico,CONCACAF,0.0,0.1,0.2
-South Korea,AFC,0.0,0.1,0.1
-South Africa,CAF,0.0,0.0,0.0
-Canada,CONCACAF,0.0,0.0,0.1
-Switzerland,UEFA,0.0,0.0,0.2
-Qatar,AFC,0.0,0.0,0.0
-Czech Republic,UEFA,0.0,0.1,0.1
-Turkey,UEFA,0.0,0.0,0.2
-Australia,AFC,0.0,0.0,0.0
-Paraguay,CONMEBOL,0.0,0.1,0.1
-United States,CONCACAF,0.0,0.0,0.0
-Scotland,UEFA,0.0,0.0,0.1
-Haiti,CONCACAF,0.0,0.0,0.0
-Morocco,CAF,0.0,0.1,0.2
-Netherlands,UEFA,0.0,0.0,0.1
-Sweden,UEFA,0.0,0.0,0.0
-Tunisia,CAF,0.0,0.0,0.0
-Japan,AFC,0.0,0.1,0.3
-Belgium,UEFA,0.0,0.0,0.0
-New Zealand,OFC,0.0,0.0,0.0
-Germany,UEFA,0.0,0.0,0.0
-Curacao,CONCACAF,0.0,0.0,0.0
-Ivory Coast,CAF,0.0,0.0,0.1
-Saudi Arabia,AFC,0.0,0.0,0.0
-Egypt,CAF,0.0,0.0,0.0
-Iran,AFC,0.0,0.0,0.0
-France,UEFA,0.0,0.0,0.0
-Norway,UEFA,0.0,0.0,0.0
-Argentina,CONMEBOL,0.0,0.2,0.2
-Iraq,AFC,0.0,0.0,0.0
-Senegal,CAF,0.0,0.0,0.0
-Jordan,AFC,0.0,0.0,0.0
-Austria,UEFA,0.0,0.0,0.1
-Uzbekistan,AFC,0.0,0.0,0.2
-DR Congo,CAF,0.0,0.1,0.1
-Colombia,CONMEBOL,0.0,0.1,0.1
-England,UEFA,0.0,0.0,0.1
-Croatia,UEFA,0.0,0.0,0.0
-Ghana,CAF,0.0,0.0,0.0
+Argentina,CONMEBOL,0.1772,0.2246,0.317
+Spain,UEFA,0.1247,0.1671,0.298
+Mexico,CONCACAF,0.1016,0.176,0.3785
+France,UEFA,0.0832,0.2132,0.5089
+Brazil,CONMEBOL,0.0759,0.191,0.2573
+Switzerland,UEFA,0.0602,0.1731,0.2833
+Netherlands,UEFA,0.0547,0.1475,0.2059
+Portugal,UEFA,0.0495,0.0639,0.1388
+Germany,UEFA,0.0463,0.0593,0.0895
+Belgium,UEFA,0.0321,0.0529,0.1774
+England,UEFA,0.0308,0.0703,0.1804
+Colombia,CONMEBOL,0.0222,0.0371,0.0607
+Canada,CONCACAF,0.0176,0.1109,0.2141
+Morocco,CAF,0.0172,0.04,0.0752
+Ecuador,CONMEBOL,0.0154,0.0306,0.0545
+Paraguay,CONMEBOL,0.0129,0.0251,0.0528
+Turkey,UEFA,0.0107,0.0213,0.0468
+Japan,AFC,0.0101,0.0324,0.0815
+Norway,UEFA,0.0093,0.0252,0.0751
+South Korea,AFC,0.0087,0.0201,0.0607
+United States,CONCACAF,0.0065,0.0148,0.0366
+Iran,AFC,0.0046,0.0143,0.0659
+Czech Republic,UEFA,0.0045,0.0115,0.0284
+Croatia,UEFA,0.0044,0.012,0.0405
+Austria,UEFA,0.0038,0.0109,0.0333
+Uruguay,CONMEBOL,0.0034,0.0089,0.0272
+Senegal,CAF,0.0031,0.0159,0.0748
+Australia,AFC,0.002,0.0051,0.0178
+Scotland,UEFA,0.0017,0.0043,0.0154
+Algeria,CAF,0.0013,0.0038,0.0225
+Panama,CONCACAF,0.0012,0.003,0.0087
+Uzbekistan,AFC,0.0005,0.0015,0.0048
+Ivory Coast,CAF,0.0005,0.0019,0.0051
+Egypt,CAF,0.0005,0.0022,0.0211
+South Africa,CAF,0.0004,0.0019,0.009
+Sweden,UEFA,0.0003,0.0011,0.003
+Iraq,AFC,0.0003,0.0009,0.0047
+Tunisia,CAF,0.0003,0.0012,0.0041
+Haiti,CONCACAF,0.0002,0.0007,0.0024
+DR Congo,CAF,0.0002,0.0009,0.0041
+Qatar,AFC,0.0,0.0001,0.0007
+Bosnia and Herzegovina,UEFA,0.0,0.0003,0.0034
+New Zealand,OFC,0.0,0.0002,0.0011
+Curacao,CONCACAF,0.0,0.0,0.0006
+Saudi Arabia,AFC,0.0,0.0002,0.0031
+Cape Verde,CAF,0.0,0.0005,0.0035
+Jordan,AFC,0.0,0.0002,0.0013
+Ghana,CAF,0.0,0.0001,0.0005
