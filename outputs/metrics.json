@@ -1,54 +1,108 @@
 {
-  "accuracy": 0.5926115956900975,
+  "accuracy": 0.5608004104669061,
+  "macro_f1": 0.4225338808120225,
+  "brier_score": 0.5814399279498699,
+  "log_loss": 0.9863396286301731,
+  "expected_calibration_error": 0.06293968822583784,
+  "feature_set": "player_enhanced",
+  "feature_columns": [
+    "elo_diff",
+    "elo_a",
+    "elo_b",
+    "form_a",
+    "form_b",
+    "goals_scored_avg_a",
+    "goals_scored_avg_b",
+    "goals_conceded_avg_a",
+    "goals_conceded_avg_b",
+    "h2h_wins_a",
+    "h2h_wins_b",
+    "stage_weight",
+    "player_avg_overall_a",
+    "player_top15_overall_a",
+    "player_top5_attack_a",
+    "player_top5_midfield_a",
+    "player_top5_defense_a",
+    "player_top5_gk_a",
+    "player_avg_age_a",
+    "player_avg_international_reputation_a",
+    "player_avg_value_eur_a",
+    "player_avg_weak_foot_a",
+    "player_avg_skill_moves_a",
+    "player_depth_score_a",
+    "player_avg_overall_b",
+    "player_top15_overall_b",
+    "player_top5_attack_b",
+    "player_top5_midfield_b",
+    "player_top5_defense_b",
+    "player_top5_gk_b",
+    "player_avg_age_b",
+    "player_avg_international_reputation_b",
+    "player_avg_value_eur_b",
+    "player_avg_weak_foot_b",
+    "player_avg_skill_moves_b",
+    "player_depth_score_b",
+    "player_avg_overall_diff",
+    "player_top15_overall_diff",
+    "player_top5_attack_diff",
+    "player_top5_midfield_diff",
+    "player_top5_defense_diff",
+    "player_top5_gk_diff",
+    "player_avg_age_diff",
+    "player_avg_international_reputation_diff",
+    "player_avg_value_eur_diff",
+    "player_avg_weak_foot_diff",
+    "player_avg_skill_moves_diff",
+    "player_depth_score_diff"
+  ],
   "classification_report": {
     "Win A": {
-      "precision": 0.5754076086956522,
-      "recall": 0.9256830601092896,
-      "f1-score": 0.7096774193548387,
+      "precision": 0.7680115273775217,
+      "recall": 0.5825136612021858,
+      "f1-score": 0.6625233064014916,
       "support": 915.0
     },
     "Win B": {
-      "precision": 0.7058823529411765,
-      "recall": 0.47761194029850745,
-      "f1-score": 0.56973293768546,
+      "precision": 0.44871794871794873,
+      "recall": 0.9286898839137645,
+      "f1-score": 0.605078336034576,
       "support": 603.0
     },
     "Draw": {
-      "precision": 0.2898550724637681,
-      "recall": 0.04640371229698376,
-      "f1-score": 0.08,
+      "precision": 0.0,
+      "recall": 0.0,
+      "f1-score": 0.0,
       "support": 431.0
     },
-    "accuracy": 0.5926115956900975,
+    "accuracy": 0.5608004104669061,
     "macro avg": {
-      "precision": 0.5237150113668656,
-      "recall": 0.483232904234927,
-      "f1-score": 0.4531367856800996,
+      "precision": 0.40557649203182344,
+      "recall": 0.5037345150386501,
+      "f1-score": 0.4225338808120225,
       "support": 1949.0
     },
     "weighted avg": {
-      "precision": 0.5526283001600488,
-      "recall": 0.5926115956900975,
-      "f1-score": 0.5271338122801487,
+      "precision": 0.499388132697463,
+      "recall": 0.5608004104669061,
+      "f1-score": 0.49824066802781636,
       "support": 1949.0
     }
   },
-  "brier_score": 0.5230222340671141,
   "confusion_matrix": [
     [
-      847,
-      51,
-      17
+      533,
+      375,
+      7
     ],
     [
-      283,
-      288,
-      32
+      43,
+      560,
+      0
     ],
     [
-      342,
-      69,
-      20
+      118,
+      313,
+      0
     ]
   ],
   "classes": [
@@ -56,8 +110,10 @@
     "B",
     "D"
   ],
-  "time_series_cv_accuracy_mean": 0.6073937153419594,
-  "time_series_cv_accuracy_std": 0.011363787438963373,
+  "time_series_cv_accuracy_mean": 0.5133703019100432,
+  "time_series_cv_accuracy_std": 0.04854236746017578,
   "train_rows": 7794,
-  "test_rows": 1949
+  "test_rows": 1949,
+  "baseline_metrics_file": "baseline_metrics.json",
+  "player_feature_note": "player baseline comparison recorded"
 }

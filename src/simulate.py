@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from itertools import combinations
@@ -17,13 +18,31 @@ from matplotlib.path import Path as MplPath
 from sklearn.ensemble import VotingClassifier
 from sklearn.preprocessing import LabelEncoder
 
-from src.features import FEATURE_COLUMNS, h2h_wins, latest_team_elo, stage_to_weight
-from src.features import team_snapshot
+from src.features import (
+    get_feature_columns,
+    h2h_wins,
+    latest_team_elo,
+    stage_to_weight,
+    team_snapshot,
+)
+from src.player_features import (
+    build_player_lookup,
+    lookup_player_snapshot,
+    player_feature_defaults,
+    player_pair_features,
+)
 from src.preprocessing import normalize_team_name
+from src.tournament import (
+    TournamentConfig,
+    all_config_teams,
+    build_knockout_field,
+    load_tournament_config,
+)
 
 RANDOM_SEED = 42
 ACCENT = "#00FF87"
 WHITE = "#FFFFFF"
+LOGGER = logging.getLogger(__name__)
 
 WC2026_GROUPS: dict[str, list[str]] = {
     "A": ["Mexico", "South Africa", "South Korea", "Czech Republic"],
@@ -121,21 +140,28 @@ class PredictionContext:
     h2h: dict[tuple[str, str], list[tuple[str, int, int]]]
     fallback_elo: float
     prediction_date: pd.Timestamp
+    tournament_config: TournamentConfig
+    use_player_features: bool
+    feature_columns: list[str]
 
 
-def all_teams() -> list[str]:
+def all_teams(config: TournamentConfig | None = None) -> list[str]:
     """Return the 48 World Cup 2026 teams in group order.
 
     Returns:
         List of team names.
     """
-    return [team for teams in WC2026_GROUPS.values() for team in teams]
+    tournament_config = config or load_tournament_config()
+    return all_config_teams(tournament_config)
 
 
 def build_prediction_context(
     results: pd.DataFrame,
     elo: pd.DataFrame,
     prediction_date: pd.Timestamp | None = None,
+    player_features: pd.DataFrame | None = None,
+    use_player_features: bool = False,
+    tournament_config: TournamentConfig | None = None,
 ) -> PredictionContext:
     """Precompute team and pair histories for fast future predictions.
 
@@ -143,6 +169,9 @@ def build_prediction_context(
         results: Cleaned historical match results.
         elo: Cleaned ELO ratings.
         prediction_date: Optional date for future prediction context.
+        player_features: Optional processed player-strength features.
+        use_player_features: Whether prediction rows include player features.
+        tournament_config: Optional loaded tournament configuration.
 
     Returns:
         PredictionContext instance.
@@ -151,6 +180,7 @@ def build_prediction_context(
         latest_result = results["date"].max()
         latest_rating = elo["date"].max()
         prediction_date = max(latest_result, latest_rating) + pd.Timedelta(days=1)
+    config = tournament_config or load_tournament_config()
 
     prior = results[results["date"] < prediction_date].sort_values("date")
     team_histories: dict[str, list[tuple[int, int]]] = defaultdict(list)
@@ -169,19 +199,48 @@ def build_prediction_context(
         )
 
     fallback_elo = float(elo["elo_rating"].median()) if not elo.empty else 1500.0
+    player_lookup = build_player_lookup(player_features)
+    player_defaults = player_feature_defaults(player_features)
     team_features: dict[str, dict[str, float]] = {}
-    for team in all_teams():
+    missing_elo: list[str] = []
+    missing_player: list[str] = []
+    for team in all_teams(config):
         normalized = normalize_team_name(team)
         snapshot = team_snapshot(team_histories[normalized])
+        if elo[elo["team"] == normalized].empty:
+            missing_elo.append(team)
+        player_values = lookup_player_snapshot(
+            player_lookup,
+            normalized,
+            int(prediction_date.year),
+            player_defaults,
+            before_year=False,
+        )
+        if normalized not in player_lookup:
+            missing_player.append(team)
         team_features[team] = {
             "elo": latest_team_elo(elo, normalized, fallback_elo),
             "form": snapshot.form,
             "goals_scored_avg": snapshot.goals_scored_avg,
             "goals_conceded_avg": snapshot.goals_conceded_avg,
             "consistency": snapshot.consistency,
+            **{f"player_{key}": value for key, value in player_values.items()},
         }
+    if missing_elo:
+        LOGGER.warning("Missing ELO mappings for teams: %s", ", ".join(missing_elo))
+    if use_player_features and missing_player:
+        LOGGER.warning(
+            "Missing player mappings for teams: %s; neutral values used",
+            ", ".join(missing_player),
+        )
     return PredictionContext(
-        team_features, dict(pair_histories), fallback_elo, prediction_date
+        team_features,
+        dict(pair_histories),
+        fallback_elo,
+        prediction_date,
+        config,
+        use_player_features,
+        get_feature_columns(use_player_features),
     )
 
 
@@ -242,7 +301,19 @@ def feature_frame_from_context(
         "h2h_wins_b": h2h_b,
         "stage_weight": stage_to_weight(stage),
     }
-    return pd.DataFrame([row], columns=FEATURE_COLUMNS)
+    if context.use_player_features:
+        player_a = {
+            key.removeprefix("player_"): value
+            for key, value in stats_a.items()
+            if key.startswith("player_")
+        }
+        player_b = {
+            key.removeprefix("player_"): value
+            for key, value in stats_b.items()
+            if key.startswith("player_")
+        }
+        row.update(player_pair_features(player_a, player_b))
+    return pd.DataFrame([row], columns=context.feature_columns)
 
 
 def predict_probabilities(
@@ -302,7 +373,7 @@ def precompute_probability_cache(
     Returns:
         Populated probability cache.
     """
-    teams = all_teams()
+    teams = all_teams(context.tournament_config)
     keys: list[tuple[str, str, str]] = []
     rows: list[dict[str, float]] = []
     for stage in stages:
@@ -317,7 +388,7 @@ def precompute_probability_cache(
                     .to_dict()
                 )
 
-    feature_frame = pd.DataFrame(rows, columns=FEATURE_COLUMNS)
+    feature_frame = pd.DataFrame(rows, columns=context.feature_columns)
     probabilities = model.predict_proba(feature_frame)
     labels = label_encoder.inverse_transform(model.classes_)
     cache: dict[tuple[str, str, str], dict[str, float]] = {}
@@ -389,13 +460,13 @@ def simulate_group_stage(
         cache: Prediction cache.
 
     Returns:
-        Qualifier list and detailed group table rows.
+        Knockout field and detailed group table rows.
     """
-    qualifiers: list[str] = []
     third_place: list[dict[str, Any]] = []
     table_rows: list[dict[str, Any]] = []
+    group_rankings: dict[str, list[str]] = {}
 
-    for group, teams in WC2026_GROUPS.items():
+    for group, teams in context.tournament_config.groups.items():
         table = {
             team: {"team": team, "group": group, "points": 0, "gf": 0, "ga": 0}
             for team in teams
@@ -437,7 +508,7 @@ def simulate_group_stage(
             row["rank"] = rank
             row["gd"] = row["gf"] - row["ga"]
             table_rows.append(row.copy())
-        qualifiers.extend([ranked[0]["team"], ranked[1]["team"]])
+        group_rankings[group] = [row["team"] for row in ranked]
         third_place.append(ranked[2])
 
     best_third = sorted(
@@ -450,8 +521,11 @@ def simulate_group_stage(
         ),
         reverse=True,
     )[:8]
-    qualifiers.extend(row["team"] for row in best_third)
-    return qualifiers, table_rows
+    best_third_teams = [row["team"] for row in best_third]
+    knockout_field = build_knockout_field(
+        context.tournament_config, group_rankings, best_third_teams
+    )
+    return knockout_field, table_rows
 
 
 def decide_knockout_winner(
@@ -513,11 +587,8 @@ def simulate_knockouts(
     Returns:
         Champion and round participants/winners.
     """
-    seeded = sorted(
-        qualifiers, key=lambda team: context.team_features[team]["elo"], reverse=True
-    )
-    rounds: dict[str, list[str]] = {"R32": seeded}
-    current = seeded
+    rounds: dict[str, list[str]] = {"R32": qualifiers}
+    current = qualifiers
     for stage, next_name in [
         ("Round of 32", "R16"),
         ("Round of 16", "QF"),
@@ -545,7 +616,15 @@ def run_monte_carlo(
     results: pd.DataFrame,
     elo: pd.DataFrame,
     simulations: int = 10_000,
-) -> tuple[pd.DataFrame, dict[str, Counter[str]], PredictionContext]:
+    player_features: pd.DataFrame | None = None,
+    use_player_features: bool = False,
+    tournament_config: TournamentConfig | None = None,
+) -> tuple[
+    pd.DataFrame,
+    dict[str, Counter[str]],
+    PredictionContext,
+    Counter[tuple[tuple[str, ...], ...]],
+]:
     """Run full-tournament Monte Carlo simulations.
 
     Args:
@@ -554,12 +633,21 @@ def run_monte_carlo(
         results: Cleaned historical results.
         elo: Cleaned ELO ratings.
         simulations: Number of tournament runs.
+        player_features: Optional processed player-strength features.
+        use_player_features: Whether to include player features in prediction rows.
+        tournament_config: Optional tournament configuration.
 
     Returns:
-        Aggregated results, round counters, and prediction context.
+        Aggregated results, round counters, prediction context, and path counters.
     """
     rng = np.random.default_rng(RANDOM_SEED)
-    context = build_prediction_context(results, elo)
+    context = build_prediction_context(
+        results,
+        elo,
+        player_features=player_features,
+        use_player_features=use_player_features,
+        tournament_config=tournament_config,
+    )
     cache = precompute_probability_cache(
         model,
         label_encoder,
@@ -574,6 +662,8 @@ def run_monte_carlo(
         "R16": Counter(),
         "QF": Counter(),
     }
+    path_counts: Counter[tuple[tuple[str, ...], ...]] = Counter()
+    path_stages = ("R32", "R16", "QF", "SF", "Final", "Champion")
 
     for simulation in range(simulations):
         qualifiers, _ = simulate_group_stage(model, label_encoder, context, rng, cache)
@@ -583,11 +673,12 @@ def run_monte_carlo(
         for stage in ("R32", "R16", "QF", "SF", "Final"):
             round_counts[stage].update(rounds[stage])
         round_counts["Champion"].update([champion])
+        path_counts.update([tuple(tuple(rounds[stage]) for stage in path_stages)])
         if (simulation + 1) % max(simulations // 5, 1) == 0:
             print(f"Monte Carlo progress: {simulation + 1}/{simulations}")
 
     rows = []
-    for team in all_teams():
+    for team in all_teams(context.tournament_config):
         rows.append(
             {
                 "team": team,
@@ -598,7 +689,7 @@ def run_monte_carlo(
             }
         )
     summary = pd.DataFrame(rows).sort_values("win_probability", ascending=False)
-    return summary.reset_index(drop=True), round_counts, context
+    return summary.reset_index(drop=True), round_counts, context, path_counts
 
 
 def save_simulation_results(summary: pd.DataFrame, output_path: Path) -> None:
@@ -627,7 +718,7 @@ def plot_heatmap_win_probabilities(
         output_path: Output PNG path.
     """
     cache = precompute_probability_cache(model, label_encoder, context, ["Group"])
-    teams = all_teams()
+    teams = all_teams(context.tournament_config)
     matrix = np.full((len(teams), len(teams)), np.nan)
     annotations = np.full((len(teams), len(teams)), "", dtype=object)
     for row, team_a in enumerate(teams):
@@ -670,7 +761,7 @@ def plot_radar_team_strengths(context: PredictionContext, output_path: Path) -> 
         output_path: Output PNG path.
     """
     teams = sorted(
-        all_teams(),
+        all_teams(context.tournament_config),
         key=lambda team: context.team_features[team]["elo"],
         reverse=True,
     )[:16]
@@ -743,6 +834,7 @@ def plot_monte_carlo_winners(summary: pd.DataFrame, output_path: Path) -> None:
 def plot_bracket_simulation(
     summary: pd.DataFrame,
     round_counts: dict[str, Counter[str]],
+    path_counts: Counter[tuple[tuple[str, ...], ...]],
     simulations: int,
     output_path: Path,
 ) -> None:
@@ -751,15 +843,24 @@ def plot_bracket_simulation(
     Args:
         summary: Simulation summary dataframe.
         round_counts: Monte Carlo round counters.
+        path_counts: Complete simulated round paths.
         simulations: Number of tournament runs.
         output_path: Output PNG path.
     """
     stages = ["R32", "R16", "QF", "SF", "Final", "Champion"]
     stage_sizes = {"R32": 32, "R16": 16, "QF": 8, "SF": 4, "Final": 2, "Champion": 1}
-    stage_teams = {
-        stage: [team for team, _ in round_counts[stage].most_common(stage_sizes[stage])]
-        for stage in stages
-    }
+    if path_counts:
+        path, _ = path_counts.most_common(1)[0]
+        stage_teams = {
+            stage: list(teams) for stage, teams in zip(stages, path, strict=True)
+        }
+    else:
+        stage_teams = {
+            stage: [
+                team for team, _ in round_counts[stage].most_common(stage_sizes[stage])
+            ]
+            for stage in stages
+        }
 
     plt.style.use("dark_background")
     fig, ax = plt.subplots(figsize=(18, 10))
@@ -842,6 +943,7 @@ def generate_visualizations(
     context: PredictionContext,
     visualizations_dir: Path,
     simulations: int,
+    path_counts: Counter[tuple[tuple[str, ...], ...]] | None = None,
 ) -> None:
     """Generate all simulation visualizations.
 
@@ -853,6 +955,7 @@ def generate_visualizations(
         context: PredictionContext.
         visualizations_dir: Output directory.
         simulations: Number of tournament runs.
+        path_counts: Complete simulated path counters.
     """
     visualizations_dir.mkdir(parents=True, exist_ok=True)
     plot_heatmap_win_probabilities(
@@ -865,6 +968,7 @@ def generate_visualizations(
     plot_bracket_simulation(
         summary,
         round_counts,
+        path_counts or Counter(),
         simulations,
         visualizations_dir / "bracket_simulation.png",
     )

@@ -1,0 +1,95 @@
+groups:
+  A:
+    - Mexico
+    - South Africa
+    - South Korea
+    - Czech Republic
+  B:
+    - Canada
+    - Switzerland
+    - Qatar
+    - Bosnia and Herzegovina
+  C:
+    - Brazil
+    - Morocco
+    - Haiti
+    - Scotland
+  D:
+    - United States
+    - Paraguay
+    - Australia
+    - Turkey
+  E:
+    - Germany
+    - Curacao
+    - Ivory Coast
+    - Ecuador
+  F:
+    - Netherlands
+    - Japan
+    - Tunisia
+    - Sweden
+  G:
+    - Belgium
+    - Egypt
+    - Iran
+    - New Zealand
+  H:
+    - Spain
+    - Cape Verde
+    - Saudi Arabia
+    - Uruguay
+  I:
+    - France
+    - Senegal
+    - Iraq
+    - Norway
+  J:
+    - Argentina
+    - Algeria
+    - Austria
+    - Jordan
+  K:
+    - Portugal
+    - DR Congo
+    - Uzbekistan
+    - Colombia
+  L:
+    - England
+    - Croatia
+    - Ghana
+    - Panama
+
+bracket_order:
+  - 1A
+  - BT8
+  - 2B
+  - 2C
+  - 1D
+  - BT7
+  - 1E
+  - 2F
+  - 1G
+  - BT6
+  - 1H
+  - 2I
+  - 1J
+  - BT5
+  - 1K
+  - 2L
+  - 1B
+  - BT4
+  - 1C
+  - 2A
+  - 1F
+  - BT3
+  - 2D
+  - 2E
+  - 1I
+  - BT2
+  - 2G
+  - 2H
+  - 1L
+  - BT1
+  - 2J
+  - 2K

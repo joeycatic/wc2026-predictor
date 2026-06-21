@@ -1,49 +1,49 @@
 team,confederation,win_probability,final_probability,sf_probability
-Spain,UEFA,0.2257,0.2572,0.2903
-Argentina,CONMEBOL,0.1843,0.2139,0.2522
-France,UEFA,0.1349,0.1511,0.1778
-Portugal,UEFA,0.083,0.0947,0.1106
-Brazil,CONMEBOL,0.0424,0.0492,0.0608
-England,UEFA,0.0335,0.0378,0.0452
-Ecuador,CONMEBOL,0.0301,0.0386,0.2164
-Morocco,CAF,0.0297,0.2074,0.2376
-Colombia,CONMEBOL,0.0284,0.0326,0.0445
-Germany,UEFA,0.0274,0.0308,0.1848
-Croatia,UEFA,0.0224,0.027,0.2206
-Austria,UEFA,0.0206,0.1244,0.1414
-Belgium,UEFA,0.0203,0.0467,0.1229
-Mexico,CONCACAF,0.0147,0.1063,0.1378
-Paraguay,CONMEBOL,0.0142,0.116,0.1374
-Norway,UEFA,0.0133,0.0164,0.1065
-Senegal,CAF,0.0104,0.0708,0.0825
-Netherlands,UEFA,0.01,0.0119,0.0157
-Iran,AFC,0.0083,0.0602,0.0835
-Algeria,CAF,0.0075,0.061,0.2367
-Australia,AFC,0.0059,0.0416,0.0482
-Japan,AFC,0.0057,0.0072,0.0486
-Switzerland,UEFA,0.0052,0.0062,0.0578
-Scotland,UEFA,0.0052,0.0442,0.0517
-Canada,CONCACAF,0.004,0.0368,0.0421
-Turkey,UEFA,0.0029,0.0034,0.0282
-Czech Republic,UEFA,0.0023,0.0192,0.0922
-Egypt,CAF,0.0017,0.0203,0.1685
-Uruguay,CONMEBOL,0.0014,0.0016,0.0231
-Uzbekistan,AFC,0.0011,0.0125,0.0519
-Sweden,UEFA,0.0008,0.0073,0.0566
-Panama,CONCACAF,0.0007,0.0116,0.0319
-Ivory Coast,CAF,0.0006,0.0056,0.0495
-Haiti,CONCACAF,0.0003,0.0027,0.0322
-Tunisia,CAF,0.0003,0.0073,0.0867
-DR Congo,CAF,0.0002,0.0024,0.022
-United States,CONCACAF,0.0002,0.0026,0.0344
-Iraq,AFC,0.0001,0.005,0.042
-South Korea,AFC,0.0001,0.0038,0.0397
-South Africa,CAF,0.0001,0.0017,0.0302
-Saudi Arabia,AFC,0.0001,0.0005,0.009
-Bosnia and Herzegovina,UEFA,0.0,0.0004,0.0095
-Qatar,AFC,0.0,0.0,0.0002
-Curacao,CONCACAF,0.0,0.0001,0.0013
-Cape Verde,CAF,0.0,0.001,0.0198
-New Zealand,OFC,0.0,0.0,0.0012
-Jordan,AFC,0.0,0.001,0.0158
-Ghana,CAF,0.0,0.0,0.0005
+Spain,UEFA,0.3,0.3,0.4
+Brazil,CONMEBOL,0.1,0.1,0.2
+Panama,CONCACAF,0.1,0.1,0.1
+Algeria,CAF,0.1,0.1,0.1
+Uruguay,CONMEBOL,0.1,0.1,0.2
+Cape Verde,CAF,0.1,0.1,0.1
+Ecuador,CONMEBOL,0.1,0.1,0.1
+Portugal,UEFA,0.1,0.1,0.2
+Bosnia and Herzegovina,UEFA,0.0,0.0,0.0
+Mexico,CONCACAF,0.0,0.1,0.2
+South Korea,AFC,0.0,0.1,0.1
+South Africa,CAF,0.0,0.0,0.0
+Canada,CONCACAF,0.0,0.0,0.1
+Switzerland,UEFA,0.0,0.0,0.2
+Qatar,AFC,0.0,0.0,0.0
+Czech Republic,UEFA,0.0,0.1,0.1
+Turkey,UEFA,0.0,0.0,0.2
+Australia,AFC,0.0,0.0,0.0
+Paraguay,CONMEBOL,0.0,0.1,0.1
+United States,CONCACAF,0.0,0.0,0.0
+Scotland,UEFA,0.0,0.0,0.1
+Haiti,CONCACAF,0.0,0.0,0.0
+Morocco,CAF,0.0,0.1,0.2
+Netherlands,UEFA,0.0,0.0,0.1
+Sweden,UEFA,0.0,0.0,0.0
+Tunisia,CAF,0.0,0.0,0.0
+Japan,AFC,0.0,0.1,0.3
+Belgium,UEFA,0.0,0.0,0.0
+New Zealand,OFC,0.0,0.0,0.0
+Germany,UEFA,0.0,0.0,0.0
+Curacao,CONCACAF,0.0,0.0,0.0
+Ivory Coast,CAF,0.0,0.0,0.1
+Saudi Arabia,AFC,0.0,0.0,0.0
+Egypt,CAF,0.0,0.0,0.0
+Iran,AFC,0.0,0.0,0.0
+France,UEFA,0.0,0.0,0.0
+Norway,UEFA,0.0,0.0,0.0
+Argentina,CONMEBOL,0.0,0.2,0.2
+Iraq,AFC,0.0,0.0,0.0
+Senegal,CAF,0.0,0.0,0.0
+Jordan,AFC,0.0,0.0,0.0
+Austria,UEFA,0.0,0.0,0.1
+Uzbekistan,AFC,0.0,0.0,0.2
+DR Congo,CAF,0.0,0.1,0.1
+Colombia,CONMEBOL,0.0,0.1,0.1
+England,UEFA,0.0,0.0,0.1
+Croatia,UEFA,0.0,0.0,0.0
+Ghana,CAF,0.0,0.0,0.0

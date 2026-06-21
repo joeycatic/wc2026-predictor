@@ -1,0 +1,62 @@
+{
+  "elo_only": {
+    "accuracy": 0.6192919445869677,
+    "macro_f1": 0.4562723661408914,
+    "brier_score": 0.4980673407511374,
+    "log_loss": 0.8527418020318559,
+    "expected_calibration_error": 0.04777027486896776,
+    "features": [
+      "elo_diff",
+      "elo_a",
+      "elo_b"
+    ]
+  },
+  "elo_player": {
+    "accuracy": 0.620831195484864,
+    "macro_f1": 0.45724259286223434,
+    "brier_score": 0.4974226062830421,
+    "log_loss": 0.8515161241160676,
+    "expected_calibration_error": 0.04103703854403095,
+    "features": [
+      "elo_diff",
+      "elo_a",
+      "elo_b",
+      "player_avg_overall_a",
+      "player_top15_overall_a",
+      "player_top5_attack_a",
+      "player_top5_midfield_a",
+      "player_top5_defense_a",
+      "player_top5_gk_a",
+      "player_avg_age_a",
+      "player_avg_international_reputation_a",
+      "player_avg_value_eur_a",
+      "player_avg_weak_foot_a",
+      "player_avg_skill_moves_a",
+      "player_depth_score_a",
+      "player_avg_overall_b",
+      "player_top15_overall_b",
+      "player_top5_attack_b",
+      "player_top5_midfield_b",
+      "player_top5_defense_b",
+      "player_top5_gk_b",
+      "player_avg_age_b",
+      "player_avg_international_reputation_b",
+      "player_avg_value_eur_b",
+      "player_avg_weak_foot_b",
+      "player_avg_skill_moves_b",
+      "player_depth_score_b",
+      "player_avg_overall_diff",
+      "player_top15_overall_diff",
+      "player_top5_attack_diff",
+      "player_top5_midfield_diff",
+      "player_top5_defense_diff",
+      "player_top5_gk_diff",
+      "player_avg_age_diff",
+      "player_avg_international_reputation_diff",
+      "player_avg_value_eur_diff",
+      "player_avg_weak_foot_diff",
+      "player_avg_skill_moves_diff",
+      "player_depth_score_diff"
+    ]
+  }
+}

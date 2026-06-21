@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -11,17 +12,28 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
-from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
-from sklearn.ensemble import VotingClassifier
-from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
+from sklearn.ensemble import (
+    GradientBoostingClassifier,
+    RandomForestClassifier,
+    VotingClassifier,
+)
+from sklearn.metrics import (
+    accuracy_score,
+    classification_report,
+    confusion_matrix,
+    f1_score,
+    log_loss,
+)
 from sklearn.model_selection import TimeSeriesSplit, cross_val_score
 from sklearn.neural_network import MLPClassifier
 from sklearn.preprocessing import LabelEncoder
 
-from src.features import FEATURE_COLUMNS
+from src.features import get_feature_columns
+from src.player_features import PLAYER_FEATURE_COLUMNS
 
 RANDOM_SEED = 42
 CLASS_LABELS = {"A": "Win A", "D": "Draw", "B": "Win B"}
+LOGGER = logging.getLogger(__name__)
 
 
 def build_ensemble() -> VotingClassifier:
@@ -90,6 +102,43 @@ def multiclass_brier_score(
     return float(np.mean(np.sum((probabilities - observed) ** 2, axis=1)))
 
 
+def expected_calibration_error(
+    y_true: np.ndarray, probabilities: np.ndarray, classes: np.ndarray, bins: int = 10
+) -> float:
+    """Compute top-label expected calibration error."""
+    predictions = classes[np.argmax(probabilities, axis=1)]
+    confidences = np.max(probabilities, axis=1)
+    correct = (predictions == y_true).astype(float)
+    edges = np.linspace(0.0, 1.0, bins + 1)
+    ece = 0.0
+    for lower, upper in zip(edges[:-1], edges[1:], strict=True):
+        mask = (confidences > lower) & (confidences <= upper)
+        if not np.any(mask):
+            continue
+        ece += float(np.mean(mask)) * abs(
+            float(np.mean(correct[mask])) - float(np.mean(confidences[mask]))
+        )
+    return ece
+
+
+def evaluate_predictions(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    probabilities: np.ndarray,
+    classes: np.ndarray,
+) -> dict[str, float]:
+    """Return compact numeric metrics for a fitted classifier."""
+    return {
+        "accuracy": float(accuracy_score(y_true, y_pred)),
+        "macro_f1": float(f1_score(y_true, y_pred, average="macro", zero_division=0)),
+        "brier_score": multiclass_brier_score(y_true, probabilities, classes),
+        "log_loss": float(log_loss(y_true, probabilities, labels=classes)),
+        "expected_calibration_error": expected_calibration_error(
+            y_true, probabilities, classes
+        ),
+    }
+
+
 def save_confusion_matrix(
     y_true: np.ndarray,
     y_pred: np.ndarray,
@@ -144,10 +193,73 @@ def save_confusion_matrix(
     plt.close(fig)
 
 
+def save_feature_importance(
+    model: VotingClassifier,
+    feature_columns: list[str],
+    output_path: Path,
+) -> None:
+    """Save mean tree-based feature importances from ensemble members."""
+    importances: list[np.ndarray] = []
+    for estimator in model.estimators_:
+        values = getattr(estimator, "feature_importances_", None)
+        if values is not None:
+            total = float(np.sum(values))
+            importances.append(values / total if total else values)
+
+    if importances:
+        mean_importance = np.mean(importances, axis=0)
+    else:
+        mean_importance = np.zeros(len(feature_columns))
+    output = pd.DataFrame(
+        {"feature": feature_columns, "importance": mean_importance}
+    ).sort_values("importance", ascending=False)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output.to_csv(output_path, index=False)
+
+
+def train_baseline_metrics(
+    train: pd.DataFrame,
+    test: pd.DataFrame,
+    label_encoder: LabelEncoder,
+    outputs_dir: Path,
+) -> dict[str, Any]:
+    """Train compact ELO-only and ELO+player baselines."""
+    baseline_specs = {
+        "elo_only": ["elo_diff", "elo_a", "elo_b"],
+    }
+    if set(PLAYER_FEATURE_COLUMNS).issubset(train.columns):
+        baseline_specs["elo_player"] = [
+            "elo_diff",
+            "elo_a",
+            "elo_b",
+            *PLAYER_FEATURE_COLUMNS,
+        ]
+
+    y_train = label_encoder.transform(train["result"])
+    y_test = label_encoder.transform(test["result"])
+    metrics: dict[str, Any] = {}
+    for name, columns in baseline_specs.items():
+        baseline = RandomForestClassifier(
+            n_estimators=150, max_depth=4, random_state=RANDOM_SEED
+        )
+        baseline.fit(train[columns], y_train)
+        probabilities = baseline.predict_proba(test[columns])
+        y_pred = baseline.predict(test[columns])
+        metrics[name] = evaluate_predictions(
+            y_test, y_pred, probabilities, baseline.classes_
+        )
+        metrics[name]["features"] = columns
+
+    with (outputs_dir / "baseline_metrics.json").open("w", encoding="utf-8") as handle:
+        json.dump(metrics, handle, indent=2)
+    return metrics
+
+
 def train_and_evaluate(
     features: pd.DataFrame,
     outputs_dir: Path,
     visualizations_dir: Path,
+    use_player_features: bool = False,
 ) -> tuple[VotingClassifier, LabelEncoder, dict[str, Any]]:
     """Train the ensemble and write all requested evaluation artifacts.
 
@@ -155,6 +267,7 @@ def train_and_evaluate(
         features: Leakage-safe feature dataframe.
         outputs_dir: Directory for metrics and model artifacts.
         visualizations_dir: Directory for plots.
+        use_player_features: Whether to train on player-enhanced columns.
 
     Returns:
         Fitted model, fitted label encoder, and metrics dictionary.
@@ -163,22 +276,32 @@ def train_and_evaluate(
     visualizations_dir.mkdir(parents=True, exist_ok=True)
 
     train, test = chronological_split(features)
+    feature_columns = get_feature_columns(use_player_features)
     label_encoder = LabelEncoder()
     label_encoder.fit(features["result"])
 
-    x_train = train[FEATURE_COLUMNS]
+    x_train = train[feature_columns]
     y_train = label_encoder.transform(train["result"])
-    x_test = test[FEATURE_COLUMNS]
+    x_test = test[feature_columns]
     y_test = label_encoder.transform(test["result"])
 
     model = build_ensemble()
-    cv = TimeSeriesSplit(n_splits=5)
-    cv_scores = cross_val_score(
-        model,
-        features[FEATURE_COLUMNS],
-        label_encoder.transform(features["result"]),
-        cv=cv,
-    )
+    encoded_all = label_encoder.transform(features["result"])
+    if len(features) > 6:
+        cv = TimeSeriesSplit(n_splits=min(5, len(features) - 1))
+        try:
+            cv_scores = cross_val_score(
+                model,
+                features[feature_columns],
+                encoded_all,
+                cv=cv,
+            )
+        except ValueError as exc:
+            LOGGER.warning("Skipping time-series CV: %s", exc)
+            cv_scores = np.array([np.nan])
+    else:
+        LOGGER.warning("Skipping time-series CV: not enough rows")
+        cv_scores = np.array([np.nan])
     model.fit(x_train, y_train)
 
     y_pred = model.predict(x_test)
@@ -195,21 +318,39 @@ def train_and_evaluate(
         output_dict=True,
         zero_division=0,
     )
-    accuracy = float(accuracy_score(y_test, y_pred))
-    brier = multiclass_brier_score(y_test, probabilities, classes)
+    compact_metrics = evaluate_predictions(y_test, y_pred, probabilities, classes)
     matrix = confusion_matrix(y_test, y_pred, labels=classes)
+    baseline_metrics = train_baseline_metrics(train, test, label_encoder, outputs_dir)
 
     metrics: dict[str, Any] = {
-        "accuracy": accuracy,
+        **compact_metrics,
+        "feature_set": "player_enhanced" if use_player_features else "base",
+        "feature_columns": feature_columns,
         "classification_report": report,
-        "brier_score": brier,
         "confusion_matrix": matrix.tolist(),
         "classes": labels.tolist(),
-        "time_series_cv_accuracy_mean": float(np.mean(cv_scores)),
-        "time_series_cv_accuracy_std": float(np.std(cv_scores)),
+        "time_series_cv_accuracy_mean": float(np.nanmean(cv_scores)),
+        "time_series_cv_accuracy_std": float(np.nanstd(cv_scores)),
         "train_rows": int(len(train)),
         "test_rows": int(len(test)),
+        "baseline_metrics_file": "baseline_metrics.json",
     }
+    if use_player_features:
+        base_brier = baseline_metrics.get("elo_only", {}).get("brier_score")
+        player_brier = baseline_metrics.get("elo_player", {}).get("brier_score")
+        base_accuracy = baseline_metrics.get("elo_only", {}).get("accuracy")
+        player_accuracy = baseline_metrics.get("elo_player", {}).get("accuracy")
+        if (
+            base_brier is not None
+            and player_brier is not None
+            and base_accuracy is not None
+            and player_accuracy is not None
+        ):
+            metrics["player_feature_note"] = (
+                "player features help accuracy but hurt calibration"
+                if player_accuracy > base_accuracy and player_brier > base_brier
+                else "player baseline comparison recorded"
+            )
 
     with (outputs_dir / "metrics.json").open("w", encoding="utf-8") as handle:
         json.dump(metrics, handle, indent=2)
@@ -221,12 +362,17 @@ def train_and_evaluate(
         classes,
         visualizations_dir / "confusion_matrix.png",
     )
+    save_feature_importance(
+        model, feature_columns, outputs_dir / "feature_importance.csv"
+    )
     joblib.dump(model, outputs_dir / "ensemble_model.pkl")
     joblib.dump(label_encoder, outputs_dir / "label_encoder.pkl")
 
     print(
-        f"TimeSeriesSplit accuracy: {np.mean(cv_scores):.3f} +/- {np.std(cv_scores):.3f}"
+        "TimeSeriesSplit accuracy: "
+        f"{np.nanmean(cv_scores):.3f} +/- {np.nanstd(cv_scores):.3f}"
     )
-    print(f"Chronological test accuracy: {accuracy:.3f}")
-    print(f"Multiclass Brier score: {brier:.3f}")
+    print(f"Chronological test accuracy: {compact_metrics['accuracy']:.3f}")
+    print(f"Multiclass Brier score: {compact_metrics['brier_score']:.3f}")
+    print(f"Log loss: {compact_metrics['log_loss']:.3f}")
     return model, label_encoder, metrics

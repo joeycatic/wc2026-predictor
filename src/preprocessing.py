@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
 
 import pandas as pd
 
@@ -138,9 +138,10 @@ def normalize_team_name(name: object) -> str:
         "DR Congo": "DR Congo",
         "Congo DR": "DR Congo",
         "Democratic Republic of the Congo": "DR Congo",
+        "Democratic Republic of Congo": "DR Congo",
         "Bosnia & Herzegovina": "Bosnia and Herzegovina",
     }
-    cleaned = str(name).strip()
+    cleaned = " ".join(str(name).split())
     return aliases.get(cleaned, cleaned)
 
 

@@ -1,0 +1,57 @@
+name: Smoke Tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Run tests
+        run: pytest
+      - name: Create CLI smoke fixtures
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import pandas as pd
+
+          raw = Path("data/raw")
+          raw.mkdir(parents=True, exist_ok=True)
+          teams = ["Germany", "France", "Brazil", "Argentina", "Spain", "England"]
+          results = []
+          for i in range(24):
+              home = teams[i % len(teams)]
+              away = teams[(i + 1) % len(teams)]
+              if i % 3 == 0:
+                  hs, as_ = 2, 1
+              elif i % 3 == 1:
+                  hs, as_ = 1, 2
+              else:
+                  hs, as_ = 1, 1
+              results.append(
+                  {
+                      "date": f"{2000 + i}-06-01",
+                      "home_team": home,
+                      "away_team": away,
+                      "home_score": hs,
+                      "away_score": as_,
+                      "tournament": "Friendly",
+                      "stage": "Group",
+                  }
+              )
+          pd.DataFrame(results).to_csv(raw / "wc_results.csv", index=False)
+
+          elo = []
+          for i, team in enumerate(teams):
+              elo.append({"date": "1999-01-01", "team": team, "elo_rating": 1700 + i * 20})
+          pd.DataFrame(elo).to_csv(raw / "elo_ratings.csv", index=False)
+          PY
+      - name: Run CLI smoke test
+        run: python main.py --simulations 10 --skip-player-features

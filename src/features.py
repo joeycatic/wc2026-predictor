@@ -9,9 +9,16 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from src.player_features import (
+    PLAYER_FEATURE_COLUMNS,
+    build_player_lookup,
+    lookup_player_snapshot,
+    player_feature_defaults,
+    player_pair_features,
+)
 from src.preprocessing import normalize_team_name
 
-FEATURE_COLUMNS = [
+BASE_FEATURE_COLUMNS = [
     "elo_diff",
     "elo_a",
     "elo_b",
@@ -25,6 +32,7 @@ FEATURE_COLUMNS = [
     "h2h_wins_b",
     "stage_weight",
 ]
+FEATURE_COLUMNS = BASE_FEATURE_COLUMNS + PLAYER_FEATURE_COLUMNS
 
 STAGE_WEIGHTS = {
     "group": 1,
@@ -233,12 +241,24 @@ def filter_training_matches(results: pd.DataFrame) -> pd.DataFrame:
     return results.copy()
 
 
-def build_feature_dataset(results: pd.DataFrame, elo: pd.DataFrame) -> pd.DataFrame:
+def get_feature_columns(use_player_features: bool) -> list[str]:
+    """Return model feature columns for the requested feature set."""
+    if use_player_features:
+        return FEATURE_COLUMNS
+    return BASE_FEATURE_COLUMNS.copy()
+
+
+def build_feature_dataset(
+    results: pd.DataFrame,
+    elo: pd.DataFrame,
+    player_features: pd.DataFrame | None = None,
+) -> pd.DataFrame:
     """Build a leakage-safe feature matrix from historical matches.
 
     Args:
         results: Cleaned match results.
         elo: Cleaned ELO ratings.
+        player_features: Optional team-season player aggregates.
 
     Returns:
         Feature dataframe containing target labels and metadata.
@@ -248,6 +268,8 @@ def build_feature_dataset(results: pd.DataFrame, elo: pd.DataFrame) -> pd.DataFr
     )
     fallback_elo = float(elo["elo_rating"].median()) if not elo.empty else 1500.0
     elo_lookup = build_elo_lookup(elo)
+    player_lookup = build_player_lookup(player_features)
+    player_defaults = player_feature_defaults(player_features)
     team_histories: dict[str, list[tuple[int, int]]] = defaultdict(list)
     pair_histories: dict[tuple[str, str], list[tuple[str, int, int]]] = defaultdict(
         list
@@ -267,27 +289,33 @@ def build_feature_dataset(results: pd.DataFrame, elo: pd.DataFrame) -> pd.DataFr
         h2h_a, h2h_b = h2h_wins(pair_histories[pair_key], team_a, team_b)
         elo_a = lookup_elo_before(elo_lookup, team_a, match_date, fallback_elo)
         elo_b = lookup_elo_before(elo_lookup, team_b, match_date, fallback_elo)
-
-        rows.append(
-            {
-                "date": match_date,
-                "team_a": team_a,
-                "team_b": team_b,
-                "elo_diff": elo_a - elo_b,
-                "elo_a": elo_a,
-                "elo_b": elo_b,
-                "form_a": snapshot_a.form,
-                "form_b": snapshot_b.form,
-                "goals_scored_avg_a": snapshot_a.goals_scored_avg,
-                "goals_scored_avg_b": snapshot_b.goals_scored_avg,
-                "goals_conceded_avg_a": snapshot_a.goals_conceded_avg,
-                "goals_conceded_avg_b": snapshot_b.goals_conceded_avg,
-                "h2h_wins_a": h2h_a,
-                "h2h_wins_b": h2h_b,
-                "stage_weight": stage_to_weight(match.get("stage", "Group")),
-                "result": result_label(score_a, score_b),
-            }
+        player_a = lookup_player_snapshot(
+            player_lookup, team_a, match_date.year, player_defaults, before_year=True
         )
+        player_b = lookup_player_snapshot(
+            player_lookup, team_b, match_date.year, player_defaults, before_year=True
+        )
+
+        row = {
+            "date": match_date,
+            "team_a": team_a,
+            "team_b": team_b,
+            "elo_diff": elo_a - elo_b,
+            "elo_a": elo_a,
+            "elo_b": elo_b,
+            "form_a": snapshot_a.form,
+            "form_b": snapshot_b.form,
+            "goals_scored_avg_a": snapshot_a.goals_scored_avg,
+            "goals_scored_avg_b": snapshot_b.goals_scored_avg,
+            "goals_conceded_avg_a": snapshot_a.goals_conceded_avg,
+            "goals_conceded_avg_b": snapshot_b.goals_conceded_avg,
+            "h2h_wins_a": h2h_a,
+            "h2h_wins_b": h2h_b,
+            "stage_weight": stage_to_weight(match.get("stage", "Group")),
+            "result": result_label(score_a, score_b),
+        }
+        row.update(player_pair_features(player_a, player_b))
+        rows.append(row)
 
         team_histories[team_a].append((score_a, score_b))
         team_histories[team_b].append((score_b, score_a))
@@ -304,6 +332,8 @@ def build_match_features(
     results: pd.DataFrame,
     elo: pd.DataFrame,
     stage: str = "Group",
+    player_features: pd.DataFrame | None = None,
+    use_player_features: bool = False,
 ) -> pd.DataFrame:
     """Build a one-row feature frame for a future match.
 
@@ -314,6 +344,8 @@ def build_match_features(
         results: Cleaned historical match results.
         elo: Cleaned ELO ratings.
         stage: Match stage.
+        player_features: Optional team-season player aggregates.
+        use_player_features: Whether to include player feature columns.
 
     Returns:
         One-row dataframe with model feature columns.
@@ -340,25 +372,34 @@ def build_match_features(
     elo_a = get_elo_before(elo, normalized_a, match_date, fallback_elo)
     elo_b = get_elo_before(elo, normalized_b, match_date, fallback_elo)
     h2h_a, h2h_b = h2h_wins(pair_history, normalized_a, normalized_b)
+    row = {
+        "elo_diff": elo_a - elo_b,
+        "elo_a": elo_a,
+        "elo_b": elo_b,
+        "form_a": snapshot_a.form,
+        "form_b": snapshot_b.form,
+        "goals_scored_avg_a": snapshot_a.goals_scored_avg,
+        "goals_scored_avg_b": snapshot_b.goals_scored_avg,
+        "goals_conceded_avg_a": snapshot_a.goals_conceded_avg,
+        "goals_conceded_avg_b": snapshot_b.goals_conceded_avg,
+        "h2h_wins_a": h2h_a,
+        "h2h_wins_b": h2h_b,
+        "stage_weight": stage_to_weight(stage),
+    }
+    if use_player_features:
+        player_lookup = build_player_lookup(player_features)
+        player_defaults = player_feature_defaults(player_features)
+        player_a = lookup_player_snapshot(
+            player_lookup, normalized_a, match_date.year, player_defaults
+        )
+        player_b = lookup_player_snapshot(
+            player_lookup, normalized_b, match_date.year, player_defaults
+        )
+        row.update(player_pair_features(player_a, player_b))
 
     return pd.DataFrame(
-        [
-            {
-                "elo_diff": elo_a - elo_b,
-                "elo_a": elo_a,
-                "elo_b": elo_b,
-                "form_a": snapshot_a.form,
-                "form_b": snapshot_b.form,
-                "goals_scored_avg_a": snapshot_a.goals_scored_avg,
-                "goals_scored_avg_b": snapshot_b.goals_scored_avg,
-                "goals_conceded_avg_a": snapshot_a.goals_conceded_avg,
-                "goals_conceded_avg_b": snapshot_b.goals_conceded_avg,
-                "h2h_wins_a": h2h_a,
-                "h2h_wins_b": h2h_b,
-                "stage_weight": stage_to_weight(stage),
-            }
-        ],
-        columns=FEATURE_COLUMNS,
+        [row],
+        columns=get_feature_columns(use_player_features),
     )
 
 
